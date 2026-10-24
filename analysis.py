@@ -7,9 +7,14 @@ from google.genai import types
 
 load_dotenv()
 
-# Override GEMINI_MODEL in .env if the configured model is unavailable.
-MODEL = os.getenv("GEMINI_MODEL", "gemini-4-argon")
-EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
+
+def _model():
+    return os.getenv("GEMINI_MODEL", "gemini-4-argon")
+
+
+def _embedding_model():
+    return os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
+
 
 ANALYSE_SYSTEM = """You are an expert teaching assistant. Given a question, the correct
 answer, and a student's answer, assess only what the evidence supports. A wrong final
@@ -132,7 +137,7 @@ def _generate_content(**kwargs):
 
 def _ask_json(system, prompt):
     result = _generate_content(
-        model=MODEL,
+        model=_model(),
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction=system,
@@ -171,7 +176,7 @@ def embed_misconception(text):
     client = _client()
     try:
         result = client.models.embed_content(
-            model=EMBEDDING_MODEL,
+            model=_embedding_model(),
             contents=text,
         )
     finally:
@@ -363,7 +368,7 @@ def _chat_with_context(context, history, message, system_instruction):
     )
 
     result = _generate_content(
-        model=MODEL,
+        model=_model(),
         contents=contents,
         config=types.GenerateContentConfig(system_instruction=system_instruction),
     )
@@ -431,7 +436,7 @@ def generate_teaching_notes(subject, topic, focus=""):
         f"Teacher's focus: {focus.strip() or 'Create concise, classroom-ready notes.'}"
     )
     result = _generate_content(
-        model=MODEL,
+        model=_model(),
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction=TEACHING_NOTES_SYSTEM,
@@ -444,6 +449,6 @@ def generate_teaching_notes(subject, topic, focus=""):
 
 def test_connection():
     result = _generate_content(
-        model=MODEL, contents="Reply with the single word: ready"
+        model=_model(), contents="Reply with the single word: ready"
     )
     return result.text.strip()

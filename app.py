@@ -8,6 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from pymongo import MongoClient
+from streamlit.errors import StreamlitSecretNotFoundError
 
 from agent_workflow import (
     VECTOR_COLLECTION_NAME,
@@ -24,6 +25,19 @@ from analysis import (
 )
 
 load_dotenv()
+try:
+    app_secrets = st.secrets
+except StreamlitSecretNotFoundError:
+    app_secrets = {}
+
+for setting in (
+    "MONGODB_URI",
+    "GEMINI_API_KEY",
+    "GEMINI_MODEL",
+    "GEMINI_EMBEDDING_MODEL",
+):
+    if setting not in os.environ and setting in app_secrets:
+        os.environ[setting] = str(app_secrets[setting])
 
 st.set_page_config(page_title="AIM Assist", page_icon="📘", layout="wide")
 

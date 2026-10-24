@@ -188,10 +188,10 @@ controlled by this application.
 - A MongoDB Atlas cluster and database user
 - A Gemini API key with access to the configured model
 
-Install the packages used by the app:
+Install the app dependencies:
 
 ```powershell
-python -m pip install streamlit pandas pymongo python-dotenv google-genai
+python -m pip install -r requirements.txt
 ```
 
 Create a `.env` file in the same folder as `app.py`:
@@ -205,6 +205,19 @@ GEMINI_MODEL=gemini-4-argon
 The current app can record and display responses with MongoDB configured. Gemini
 features also require a valid key and access to the selected model. The Class Agent's
 semantic grouping requires the Atlas Vector Search index described above.
+
+For Streamlit Community Cloud, keep `requirements.txt` in the repository root so
+the deployment installs the app dependencies. In the app's **Settings → Secrets**,
+add the configuration in TOML form:
+
+```toml
+MONGODB_URI = "mongodb+srv://<db_user>:<db_password>@<cluster>.mongodb.net/"
+GEMINI_API_KEY = "<your-api-key>"
+GEMINI_MODEL = "gemini-4-argon"
+```
+
+The app reads these values from Streamlit secrets (and uses `.env` locally). Do not
+commit `.env` or credentials to Git.
 
 Start the app from the project folder:
 
