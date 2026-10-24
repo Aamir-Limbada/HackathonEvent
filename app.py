@@ -9,6 +9,13 @@ import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from pymongo import MongoClient
 
+from agent_workflow import (
+    VECTOR_COLLECTION_NAME,
+    log_agent_action,
+    rebuild_agent_packs,
+    retry_agent_rows,
+    run_agent_saved_responses,
+)
 from analysis import (
     analyze_misconceptions,
     chat_about_education,
@@ -511,6 +518,29 @@ def get_db():
     database.teaching_resources.create_index(
         [("subject", 1), ("topic", 1), ("created_at", -1)]
     )
+    database.agent_runs.create_index([("created_at", -1)])
+    database.agent_runs.create_index("run_id", unique=True)
+    database.responses.create_index(
+        [("agent_run_id", 1), ("agent_row_number", 1)],
+        unique=True,
+        sparse=True,
+    )
+    vector_collection_info = list(
+        database.list_collections(filter={"name": VECTOR_COLLECTION_NAME})
+    )
+    if vector_collection_info:
+        collection_info = vector_collection_info[0]
+        if (
+            collection_info.get("type") == "timeseries"
+            or collection_info.get("options", {}).get("timeseries")
+        ):
+            raise RuntimeError(
+                f"{VECTOR_COLLECTION_NAME} must be a regular collection, not a "
+                "time-series collection, for Atlas Vector Search."
+            )
+    else:
+        database.create_collection(VECTOR_COLLECTION_NAME)
+    database[VECTOR_COLLECTION_NAME].create_index("label_key", unique=True)
     return database
 
 
@@ -537,6 +567,13 @@ def reset_subject_selection():
 
 def reset_question_selection():
     st.session_state["question_select"] = None
+
+
+def prepare_teaching_notes(subject, topic, focus):
+    st.session_state["teaching_assistant_subject"] = subject
+    st.session_state["teaching_assistant_topic"] = topic
+    st.session_state["teacher_notes_focus"] = focus
+    st.session_state["main_navigation_tabs"] = "💬 Teaching Assistant"
 
 
 def render_insight_pie(correct, incorrect):
@@ -568,7 +605,7 @@ def render_insight_pie(correct, incorrect):
     )
 
 
-tab_add, tab_questions, tab_view, tab_insights, tab_chat, tab_assistant, tab_library = st.tabs(
+tab_add, tab_questions, tab_view, tab_insights, tab_chat, tab_assistant, tab_library, tab_agent = st.tabs(
     [
         "📝 Record Response",
         "📚 Question Bank",
@@ -577,6 +614,7 @@ tab_add, tab_questions, tab_view, tab_insights, tab_chat, tab_assistant, tab_lib
         "🧠 Misconception Insights",
         "💬 Teaching Assistant",
         "📂 Teaching Library",
+        "🤖 Class Agent",
     ],
     key="main_navigation_tabs",
     on_change="rerun",
@@ -1424,17 +1462,19 @@ with tab_chat:
 
                 if result["patterns"]:
                     st.markdown("#### Possible Misconceptions")
-                    for pattern in result["patterns"]:
+                    for pattern_index, pattern in enumerate(result["patterns"]):
                         with st.container(border=True):
                             st.markdown(
                                 f"**{pattern['label']}** "
                                 f"({pattern['confidence']} confidence)"
                             )
                             st.write(pattern["explanation"])
+                            pattern_evidence = []
                             for index in pattern["evidence_indices"]:
                                 if index >= len(evidence_responses):
                                     continue
                                 response = evidence_responses[index]
+                                pattern_evidence.append(response)
                                 st.caption(
                                     f"{response.get('subject', '')} / "
                                     f"{response.get('topic', '')} ? "
@@ -1445,6 +1485,40 @@ with tab_chat:
                                     f"{response.get('student_answer', '')} | "
                                     f"Correct answer: "
                                     f"{response.get('correct_answer', '')}"
+                                )
+                            if pattern_evidence:
+                                evidence_text = "\n".join(
+                                    (
+                                        f"- Question: {item.get('question', '')}\n"
+                                        f"  Correct answer: {item.get('correct_answer', '')}\n"
+                                        f"  Student answer: {item.get('student_answer', '')}"
+                                    )
+                                    for item in pattern_evidence
+                                )
+                                notes_focus = (
+                                    "Create focused teaching notes to address this "
+                                    "evidence-backed misconception.\n"
+                                    f"Misconception: {pattern['label']}\n"
+                                    f"Gemini's explanation: {pattern['explanation']}\n"
+                                    "Question and answer evidence:\n"
+                                    f"{evidence_text}\n"
+                                    "Explain the correct reasoning, why this "
+                                    "misconception may be tempting, and a practical "
+                                    "reteaching approach. Include a short check for "
+                                    "understanding. Do not assume reasoning beyond "
+                                    "the supplied evidence."
+                                )
+                                notes_topic = selected_topic or pattern_evidence[0].get(
+                                    "topic", ""
+                                )
+                                st.button(
+                                    "Prepare teaching notes in Teaching Assistant",
+                                    key=(
+                                        f"prepare_misconception_notes_"
+                                        f"{analysis_key}_{pattern_index}"
+                                    ),
+                                    on_click=prepare_teaching_notes,
+                                    args=(selected_subject, notes_topic, notes_focus),
                                 )
                 else:
                     st.success(
@@ -1666,11 +1740,15 @@ with tab_assistant:
         if study_topic == "Any Topic":
             study_topic = None
 
-    with st.expander("Create Teaching Notes"):
+    with st.expander(
+        "Create Teaching Notes",
+        expanded=bool(st.session_state.get("teacher_notes_focus")),
+    ):
         with st.form("teacher_notes_form"):
-            notes_focus = st.text_input(
+            notes_focus = st.text_area(
                 "What should the notes focus on?",
                 placeholder="For example: key vocabulary and common misconceptions",
+                key="teacher_notes_focus",
             )
             create_notes = st.form_submit_button(
                 "Generate Teaching Notes",
@@ -1781,3 +1859,630 @@ with tab_assistant:
                 ]
             )
             st.rerun()
+
+# ---------- Class agent ----------
+with tab_agent:
+    st.subheader("Class Response Agent")
+    st.caption(
+        "Turn responses already saved in AIM Assist into reviewed, verified revision "
+        "packs. No CSV upload is needed."
+    )
+    with st.container(border=True):
+        st.markdown("**What it does**")
+        st.markdown(
+            "1. Select saved student responses that have not been processed by this "
+            "agent.\n"
+            "2. Gemini assesses each answer and updates its saved correctness mark. "
+            "Uncertain or borderline marks are held for your review.\n"
+            "3. Incorrect answers are grouped by misconception. Atlas Vector Search "
+            "can combine groups with similar meanings.\n"
+            "4. Gemini drafts a revision pack and checks its practice answers.\n"
+            "5. You review the marks and approve the pack before it is saved to the "
+            "Teaching Library."
+        )
+        st.caption(
+            "The agent does not create student responses. It reads and updates the "
+            "responses already in your database."
+        )
+
+    st.caption(
+        "AI model: "
+        f"`{os.getenv('GEMINI_MODEL', 'gemini-4-argon')}`"
+    )
+
+    saved_classes = sorted(db.responses.distinct("class_name"))
+    saved_subjects = sorted(db.responses.distinct("subject"))
+    if not saved_classes or not saved_subjects:
+        st.info(
+            "There are no saved responses to process yet. First record student "
+            "answers in the **Record Response** tab."
+        )
+    else:
+        filter_col1, filter_col2, filter_col3 = st.columns(3)
+        with filter_col1:
+            selected_agent_class = st.selectbox(
+                "Class",
+                ["All classes", *saved_classes],
+                key="agent_saved_class",
+            )
+        class_query = (
+            {}
+            if selected_agent_class == "All classes"
+            else {"class_name": selected_agent_class}
+        )
+        available_subjects = sorted(
+            db.responses.distinct("subject", class_query)
+        )
+        with filter_col2:
+            selected_agent_subject = st.selectbox(
+                "Subject",
+                ["All subjects", *available_subjects],
+                key="agent_saved_subject",
+            )
+        scope_query = dict(class_query)
+        if selected_agent_subject != "All subjects":
+            scope_query["subject"] = selected_agent_subject
+        available_topics = sorted(
+            topic
+            for topic in db.responses.distinct("topic", scope_query)
+            if topic
+        )
+        with filter_col3:
+            selected_agent_topic = st.selectbox(
+                "Topic",
+                ["All topics", *available_topics],
+                key="agent_saved_topic",
+            )
+        if selected_agent_topic != "All topics":
+            scope_query["topic"] = selected_agent_topic
+        scope_query["$or"] = [
+            {"analysis": None},
+            {"analysis.source": {"$ne": "gemini_agent"}},
+        ]
+        available_response_count = db.responses.count_documents(scope_query)
+        st.write(
+            f"**{available_response_count} saved response(s)** in this scope have "
+            "not been processed by the Class Agent."
+        )
+        selected_responses = list(
+            db.responses.find(scope_query)
+            .sort("created_at", 1)
+            .limit(100)
+        )
+        if available_response_count > 100:
+            st.info(
+                "Showing the first 100 unprocessed responses. Run this batch, then "
+                "run the agent again to process the remaining responses."
+            )
+        if selected_responses:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Class": item.get("class_name", ""),
+                            "Student": item.get("student_name", ""),
+                            "Subject": item.get("subject", ""),
+                            "Topic": item.get("topic", ""),
+                            "Question": item.get("question", ""),
+                            "Student answer": item.get("student_answer", ""),
+                            "Current mark": (
+                                "Correct"
+                                if item.get("is_correct")
+                                else "Incorrect"
+                            ),
+                        }
+                        for item in selected_responses
+                    ]
+                ),
+                hide_index=True,
+                width="stretch",
+            )
+        run_disabled = (
+            not selected_responses
+            or not bool(os.getenv("GEMINI_API_KEY"))
+        )
+        if not os.getenv("GEMINI_API_KEY"):
+            st.warning(
+                "Gemini is not configured because `GEMINI_API_KEY` is missing from "
+                "`.env`. Add your key to enable the agent."
+            )
+        if st.button(
+            f"Analyze {len(selected_responses)} saved response(s)",
+            type="primary",
+            disabled=run_disabled,
+            key="run_class_agent",
+        ):
+            try:
+                with st.spinner(
+                    "Assessing saved answers, grouping misconceptions, and checking "
+                    "revision questions..."
+                ):
+                    run_id = run_agent_saved_responses(db, selected_responses)
+                st.session_state["agent_run_selected"] = run_id
+                completed_run = db.agent_runs.find_one({"run_id": run_id})
+                if completed_run.get("status") == "paused_error":
+                    st.warning(
+                        "Answer assessment finished, but misconception grouping "
+                        "paused. Review the run error and retry."
+                    )
+                else:
+                    st.success(
+                        "Saved responses analyzed. Review uncertain marks and "
+                        "revision packs below."
+                    )
+                st.rerun()
+            except Exception as error:
+                st.error(f"The Class Agent could not complete: {error}")
+
+    recent_runs = list(
+        db.agent_runs.find(
+            {},
+            {
+                "_id": 0,
+                "run_id": 1,
+                "status": 1,
+                "row_count": 1,
+                "processed_count": 1,
+                "failed_count": 1,
+                "created_at": 1,
+            },
+        )
+        .sort("created_at", -1)
+        .limit(20)
+    )
+    if recent_runs:
+        run_labels = {
+            run["run_id"]: (
+                f"{run.get('created_at', 'Unknown time')} · "
+                f"{run.get('status', 'unknown')} · "
+                f"{run.get('processed_count', 0)}/{run.get('row_count', 0)} rows"
+            )
+            for run in recent_runs
+        }
+        run_ids = list(run_labels)
+        default_run = st.session_state.get("agent_run_selected")
+        if default_run not in run_ids:
+            default_run = run_ids[0]
+        selected_run_id = st.selectbox(
+            "Agent run history",
+            run_ids,
+            index=run_ids.index(default_run),
+            format_func=lambda run_id: run_labels[run_id],
+            key="agent_run_selected",
+        )
+        selected_run = db.agent_runs.find_one({"run_id": selected_run_id})
+        if selected_run:
+            st.markdown(f"#### Run status: `{selected_run.get('status', 'unknown')}`")
+            st.write(
+                f"Processed {selected_run.get('processed_count', 0)} of "
+                f"{selected_run.get('row_count', 0)} rows; "
+                f"{selected_run.get('failed_count', 0)} failed."
+            )
+            if selected_run.get("last_error"):
+                st.error(selected_run["last_error"])
+
+            failed_rows = selected_run.get("failed_rows", [])
+            if failed_rows:
+                st.markdown("#### Responses that need retry")
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {
+                                "Response #": item.get("row_number"),
+                                "Retryable": item.get("retryable", False),
+                                "Error": item.get("error", ""),
+                            }
+                            for item in failed_rows
+                        ]
+                    ),
+                    hide_index=True,
+                    width="stretch",
+                )
+            marked_responses = list(
+                db.responses.find(
+                    {"agent_run_id": selected_run_id}
+                ).sort("agent_row_number", 1)
+            )
+            if marked_responses:
+                st.markdown("#### Marking results")
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {
+                                "Response #": item.get("agent_row_number"),
+                                "Student": item.get("student_name"),
+                                "Question": item.get("question"),
+                                "Student answer": item.get("student_answer"),
+                                "Correct": item.get("is_correct"),
+                                "Score": item.get("analysis", {}).get("score"),
+                                "Confidence": item.get("analysis", {}).get(
+                                    "confidence"
+                                ),
+                                "Misconception": item.get("analysis", {}).get(
+                                    "misconception"
+                                ),
+                                "Review": item.get("teacher_review", {}).get(
+                                    "status"
+                                ),
+                            }
+                            for item in marked_responses
+                        ]
+                    ),
+                    hide_index=True,
+                    width="stretch",
+                )
+            retryable_rows = any(item.get("retryable") for item in failed_rows)
+            retry_needed = (
+                retryable_rows
+                or selected_run.get("status") == "paused_error"
+                or bool(selected_run.get("vector_errors"))
+                or any(
+                    pack.get("error") or not pack.get("verified")
+                    for pack in selected_run.get("packs", [])
+                )
+            )
+            if retry_needed and st.button(
+                "Retry failed rows and rebuild revision packs",
+                key=f"retry_agent_rows_{selected_run_id}",
+            ):
+                try:
+                    if retryable_rows:
+                        with st.spinner(
+                            "Retrying failed rows and rebuilding groups..."
+                        ):
+                            retried, remaining = retry_agent_rows(
+                                db,
+                                selected_run_id,
+                            )
+                        st.info(
+                            f"Retried {retried} rows; {remaining} remain unresolved."
+                        )
+                    else:
+                        with st.spinner("Rebuilding groups and revision packs..."):
+                            rebuild_agent_packs(db, selected_run_id)
+                        st.success("Revision groups and packs have been rebuilt.")
+                    st.rerun()
+                except Exception as error:
+                    st.error(f"Could not retry the agent workflow: {error}")
+
+            pending_reviews = list(
+                db.responses.find(
+                    {
+                        "agent_run_id": selected_run_id,
+                        "teacher_review.status": "pending",
+                    }
+                ).sort("agent_row_number", 1)
+            )
+            if pending_reviews:
+                st.markdown("#### Teacher review for uncertain marks")
+                st.caption(
+                    "Low-confidence and borderline scores stay on hold until you "
+                    "confirm each mark."
+                )
+                with st.form(f"agent_review_form_{selected_run_id}"):
+                    teacher_decisions = {}
+                    for response in pending_reviews:
+                        response_id = str(response["_id"])
+                        analysis = response.get("analysis", {})
+                        label = (
+                            f"Response #{response.get('agent_row_number')}: "
+                            f"{response.get('student_name')} — "
+                            f"{response.get('question')}"
+                        )
+                        st.write(
+                            f"{label} | score {analysis.get('score')} | "
+                            f"{analysis.get('confidence')} confidence"
+                        )
+                        st.caption(
+                            f"Student answer: {response.get('student_answer', '')}"
+                        )
+                        teacher_decisions[response_id] = st.selectbox(
+                            "Teacher decision",
+                            ["Needs review", "Mark correct", "Mark incorrect"],
+                            key=f"teacher_decision_{selected_run_id}_{response_id}",
+                        )
+                    save_reviews = st.form_submit_button("Save teacher decisions")
+                if save_reviews:
+                    reviewed_count = 0
+                    for response in pending_reviews:
+                        response_id = str(response["_id"])
+                        decision = teacher_decisions[response_id]
+                        if decision == "Needs review":
+                            continue
+                        is_correct = decision == "Mark correct"
+                        db.responses.update_one(
+                            {"_id": response["_id"]},
+                            {
+                                "$set": {
+                                    "is_correct": is_correct,
+                                    "teacher_review.status": "reviewed",
+                                    "teacher_review.decision": decision,
+                                    "teacher_review.reviewed_at": datetime.now(
+                                        timezone.utc
+                                    ),
+                                }
+                            },
+                        )
+                        reviewed_count += 1
+                    log_agent_action(
+                        db,
+                        selected_run_id,
+                        "teacher_review_marks",
+                        "succeeded",
+                        {"reviewed": reviewed_count},
+                    )
+                    if reviewed_count:
+                        rebuild_agent_packs(db, selected_run_id)
+                        st.success(
+                            f"Saved {reviewed_count} teacher decisions and rebuilt "
+                            "the evidence groups."
+                        )
+                        st.rerun()
+                    else:
+                        st.info("No teacher decisions were changed.")
+
+            packs = selected_run.get("packs", [])
+            if packs:
+                st.markdown("#### Draft revision packs")
+                misconception_counts = pd.DataFrame(
+                    [
+                        {
+                            "Misconception": (
+                                f"{pack.get('canonical_label', pack['title'])} / "
+                                f"{pack.get('subject', '')} / "
+                                f"{pack.get('topic', '')}"
+                            ),
+                            "Responses": pack.get("evidence_count", 0),
+                        }
+                        for pack in packs
+                    ]
+                )
+                st.bar_chart(
+                    misconception_counts,
+                    x="Misconception",
+                    y="Responses",
+                )
+                for pack in packs:
+                    with st.container(border=True):
+                        st.markdown(f"**{pack.get('canonical_label', pack['title'])}**")
+                        st.caption(
+                            f"{pack.get('subject', '')} / {pack.get('topic', '')} · "
+                            f"{pack.get('evidence_count', 0)} answer(s)"
+                        )
+                        if pack.get("verification_attempts"):
+                            st.caption(
+                                "Practice-question check attempts: "
+                                f"{pack['verification_attempts']}"
+                            )
+                        if pack.get("vector_similarity") is not None:
+                            st.caption(
+                                "Atlas Vector Search grouped this with a similar "
+                                f"label (similarity {pack['vector_similarity']:.3f})."
+                            )
+                        if pack.get("error"):
+                            st.error(pack["error"])
+                        materials = pack.get("materials")
+                        if materials:
+                            st.write(materials.get("explanation", ""))
+                            st.markdown("**Revision notes**")
+                            for note in materials.get("revision_notes", []):
+                                st.markdown(f"- {note}")
+                            st.markdown("**Practice questions**")
+                            for question_index, question_item in enumerate(
+                                materials.get("practice_questions", [])
+                            ):
+                                check = (
+                                    pack.get("verification", [])[question_index]
+                                    if question_index < len(pack.get("verification", []))
+                                    else {"pass": False, "issue": "Not verified"}
+                                )
+                                st.write(
+                                    f"{'PASS' if check['pass'] else 'FAIL'} · "
+                                    f"{question_item.get('question', '')}"
+                                )
+                                st.caption(
+                                    f"Proposed answer: {question_item.get('answer', '')}"
+                                )
+                                if check.get("issue"):
+                                    st.warning(check["issue"])
+                            st.write(
+                                f"Teacher tip: {materials.get('teacher_tip', '')}"
+                            )
+                        else:
+                            st.error("No revision pack was generated for this group.")
+
+            vector_errors = selected_run.get("vector_errors", [])
+            if vector_errors:
+                st.warning(
+                    "Atlas could not compare one or more misconception labels by "
+                    "meaning, so those labels were not combined. Check that the "
+                    "Vector Search index is ready and Atlas is reachable, then retry "
+                    "grouping before releasing the packs."
+                )
+
+            remaining_reviews = db.responses.count_documents(
+                {
+                    "agent_run_id": selected_run_id,
+                    "teacher_review.status": "pending",
+                }
+            )
+            has_failed_rows = bool(selected_run.get("failed_count", 0))
+            all_packs_verified = bool(packs) and all(
+                pack.get("verified") and pack.get("materials")
+                for pack in packs
+            )
+            if selected_run.get("status") == "released":
+                st.success(
+                    f"Approved by {selected_run.get('approved_by', 'teacher')} and "
+                    "released to the Teaching Library."
+                )
+            elif packs:
+                teacher_name = st.text_input(
+                    "Teacher approving these revision packs",
+                    key=f"agent_approver_{selected_run_id}",
+                )
+                approval_ready = (
+                    selected_run.get("status") == "awaiting_review"
+                    and not remaining_reviews
+                    and not has_failed_rows
+                    and not vector_errors
+                    and all_packs_verified
+                    and bool(teacher_name.strip())
+                )
+                if not all_packs_verified:
+                    st.warning(
+                        "Release is blocked until every practice question passes "
+                        "verification."
+                    )
+                if remaining_reviews or has_failed_rows:
+                    st.warning(
+                        "Resolve all uncertain marks and failed rows before approval."
+                    )
+                if vector_errors:
+                    st.warning(
+                        "Release is paused until Atlas has compared the misconception "
+                        "labels successfully."
+                    )
+                if st.button(
+                    "Approve and release revision packs",
+                    type="primary",
+                    disabled=not approval_ready,
+                    key=f"approve_agent_run_{selected_run_id}",
+                ):
+                    try:
+                        for pack in packs:
+                            existing_resource = db.teaching_resources.find_one(
+                                {
+                                    "agent_run_id": selected_run_id,
+                                    "agent_pattern_index": pack["pattern_index"],
+                                }
+                            )
+                            if existing_resource:
+                                continue
+                            materials = pack["materials"]
+                            content = (
+                                f"### Misconception: {pack['misconception']}\n\n"
+                                f"{materials['explanation']}\n\n"
+                                "### Revision notes\n"
+                                + "\n".join(
+                                    f"- {note}"
+                                    for note in materials["revision_notes"]
+                                )
+                                + "\n\n### Practice questions\n"
+                                + "\n".join(
+                                    f"{index}. {item['question']}\n"
+                                    f"   Answer: {item['answer']}"
+                                    for index, item in enumerate(
+                                        materials["practice_questions"],
+                                        start=1,
+                                    )
+                                )
+                                + f"\n\n### Teacher tip\n{materials['teacher_tip']}"
+                            )
+                            db.teaching_resources.insert_one(
+                                {
+                                    "title": pack["title"],
+                                    "subject": pack["subject"],
+                                    "topic": pack["topic"],
+                                    "content": content,
+                                    "created_at": datetime.now(timezone.utc),
+                                    "agent_run_id": selected_run_id,
+                                    "agent_pattern_index": pack["pattern_index"],
+                                }
+                            )
+                        log_agent_action(
+                            db,
+                            selected_run_id,
+                            "teacher_approval_and_release",
+                            "approved",
+                            {"teacher": teacher_name.strip(), "packs": len(packs)},
+                        )
+                        db.agent_runs.update_one(
+                            {"run_id": selected_run_id},
+                            {
+                                "$set": {
+                                    "status": "released",
+                                    "approved_by": teacher_name.strip(),
+                                    "approved_at": datetime.now(timezone.utc),
+                                    "updated_at": datetime.now(timezone.utc),
+                                }
+                            },
+                        )
+                        st.success("Revision packs released to the Teaching Library.")
+                        st.rerun()
+                    except Exception as error:
+                        st.error(
+                            "Could not release all revision packs. Existing saved "
+                            f"packs are retained and the action can be retried: {error}"
+                        )
+
+            st.markdown("#### What the agent did")
+            summary_columns = st.columns(3)
+            summary_columns[0].metric(
+                "Answers assessed",
+                f"{selected_run.get('processed_count', 0)} / "
+                f"{selected_run.get('row_count', 0)}",
+            )
+            summary_columns[1].metric(
+                "Misconception groups",
+                len(packs),
+            )
+            verified_pack_count = sum(
+                bool(pack.get("verified")) for pack in packs
+            )
+            summary_columns[2].metric(
+                "Revision packs checked",
+                f"{verified_pack_count} / {len(packs)} passed",
+            )
+
+            if failed_rows:
+                st.write(
+                    f"**Answer assessment:** {len(failed_rows)} response(s) could "
+                    "not be assessed. Review the retry section above."
+                )
+            else:
+                st.write(
+                    f"**Answer assessment:** all "
+                    f"{selected_run.get('processed_count', 0)} selected responses "
+                    "were assessed."
+                )
+
+            if packs:
+                st.write(
+                    f"**Misconceptions:** incorrect answers were organized into "
+                    f"{len(packs)} revision group(s). Similar labels may be combined "
+                    "when Atlas finds a close meaning."
+                )
+                if all_packs_verified:
+                    st.write(
+                        "**Quality check:** every practice-question answer passed "
+                        "Gemini's separate verification check."
+                    )
+                else:
+                    st.write(
+                        "**Quality check:** some revision packs still need "
+                        "correction. They cannot be released until every question "
+                        "passes verification."
+                    )
+            elif selected_run.get("status") == "completed":
+                st.write(
+                    "**Misconceptions:** no incorrect answers in this run were "
+                    "grouped into a revision pack."
+                )
+
+            if remaining_reviews:
+                st.write(
+                    f"**Teacher review:** {remaining_reviews} uncertain mark(s) "
+                    "are waiting for your decision."
+                )
+            elif selected_run.get("status") == "released":
+                st.write(
+                    f"**Teacher approval:** approved by "
+                    f"{selected_run.get('approved_by', 'the teacher')} and saved to "
+                    "the Teaching Library."
+                )
+            elif packs:
+                st.write(
+                    "**Teacher approval:** waiting for you to review and release "
+                    "the verified packs."
+                )
