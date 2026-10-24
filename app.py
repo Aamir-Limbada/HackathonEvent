@@ -15,30 +15,24 @@ st.title("📚 TeachAssist AI")
 st.caption("Record student answers and spot where the class is struggling.")
 
 SUBJECT_TOPICS = {
-    "English": [
-        "Grammar",
-        "Punctuation",
-        "Reading comprehension",
-        "Vocabulary",
-        "Sentence structure",
-        "Writing",
-    ],
     "Maths": [
-        "Number",
-        "Fractions",
-        "Decimals",
-        "Percentages",
-        "Algebra",
-        "Geometry",
-        "Statistics",
+        "Algebra and functions",
+        "Fractions and percentages",
+        "Geometry and measures",
     ],
-    "Science": [
-        "Biology",
-        "Chemistry",
-        "Physics",
-        "Cells",
-        "Forces",
-        "Electricity",
+    "Chemistry": [
+        "Atoms and elements",
+        "Chemical reactions",
+        "Acids and alkalis",
+    ],
+    "Physics": [
+        "Forces and motion",
+        "Electric circuits",
+        "Energy and waves",
+    ],
+    "Biology": [
+        "Cells and transport",
+        "Inheritance",
         "Ecosystems",
     ],
 }
@@ -52,6 +46,11 @@ def get_db():
     client = MongoClient(uri, serverSelectionTimeoutMS=5000)
     client.admin.command("ping")
     database = client["teaching_assistant"]
+    database.classes.create_index("class_name", unique=True)
+    database.students.create_index(
+        [("class_name", 1), ("student_name", 1)],
+        unique=True,
+    )
     database.questions.create_index(
         [("subject", 1), ("topic", 1), ("question", 1)],
         unique=True,
@@ -71,24 +70,11 @@ def load_df():
     return pd.DataFrame(docs)
 
 
-def select_or_add_existing_value(label, field, key):
-    existing_values = {
-        value.strip()
-        for value in db.responses.distinct(field)
-        if isinstance(value, str) and value.strip()
-    }
-    return st.selectbox(
-        label,
-        sorted(existing_values, key=str.casefold),
-        index=None,
-        placeholder=f"Type or select {label.lower()}",
-        accept_new_options=True,
-        key=key,
-        help="Type to search existing values, or enter a new value. New values are saved with the response.",
-    )
+def reset_student_selection():
+    st.session_state["student_select"] = None
 
 
-def reset_topic_selection():
+def reset_subject_selection():
     st.session_state["topic_select"] = None
     st.session_state["question_select"] = None
 
@@ -103,12 +89,50 @@ tab_add, tab_view, tab_insights, tab_chat = st.tabs(
 
 # ---------- Add response ----------
 with tab_add:
+    class_col, student_col = st.columns(2)
+    with class_col:
+        class_options = [
+            item["class_name"]
+            for item in db.classes.find({}, {"_id": 0, "class_name": 1}).sort(
+                "class_name", 1
+            )
+        ]
+        class_name = st.selectbox(
+            "Class or group",
+            class_options,
+            index=None,
+            placeholder="Search or add a class",
+            accept_new_options=True,
+            key="class_select",
+            on_change=reset_student_selection,
+        )
+    with student_col:
+        student_options = []
+        if class_name:
+            student_options = [
+                item["student_name"]
+                for item in db.students.find(
+                    {"class_name": class_name},
+                    {"_id": 0, "student_name": 1},
+                ).sort("student_name", 1)
+            ]
+        student_name = st.selectbox(
+            "Student name",
+            student_options,
+            index=None,
+            placeholder="Search or add a student",
+            accept_new_options=True,
+            key="student_select",
+            disabled=not class_name,
+            help="Choose a student in the selected class or type a new student's name.",
+        )
+
     subject_col, topic_col = st.columns(2)
     subject = subject_col.selectbox(
         "Subject",
         list(SUBJECT_TOPICS),
         key="subject_select",
-        on_change=reset_topic_selection,
+        on_change=reset_subject_selection,
     )
     topic = topic_col.selectbox(
         "Topic",
@@ -139,16 +163,6 @@ with tab_add:
     selected_question = questions_by_text.get(question) if question else None
 
     with st.form("answer_form", clear_on_submit=True):
-        class_col, student_col = st.columns(2)
-        with class_col:
-            class_name = select_or_add_existing_value(
-                "Class or group", "class_name", "class_name_select"
-            )
-        with student_col:
-            student_name = select_or_add_existing_value(
-                "Student name or ID", "student_name", "student_name_select"
-            )
-
         if selected_question:
             correct_answer = st.text_area(
                 "Correct answer",
@@ -178,6 +192,28 @@ with tab_add:
             try:
                 normalized_question = question.strip()
                 normalized_answer = correct_answer.strip()
+                normalized_class = class_name.strip()
+                normalized_student = student_name.strip()
+
+                db.classes.update_one(
+                    {"class_name": normalized_class},
+                    {"$setOnInsert": {"class_name": normalized_class}},
+                    upsert=True,
+                )
+                db.students.update_one(
+                    {
+                        "class_name": normalized_class,
+                        "student_name": normalized_student,
+                    },
+                    {
+                        "$setOnInsert": {
+                            "class_name": normalized_class,
+                            "student_name": normalized_student,
+                        }
+                    },
+                    upsert=True,
+                )
+
                 if selected_question is None:
                     db.questions.update_one(
                         {
@@ -208,8 +244,8 @@ with tab_add:
                     normalized_answer = saved_question["correct_answer"]
 
                 db.responses.insert_one({
-                    "class_name": class_name.strip(),
-                    "student_name": student_name.strip(),
+                    "class_name": normalized_class,
+                    "student_name": normalized_student,
                     "subject": subject,
                     "topic": topic.strip(),
                     "question": normalized_question,
@@ -236,6 +272,7 @@ with tab_view:
 # ---------- Class insights ----------
 with tab_insights:
     df = load_df()
+    st.subheader("Explore class results")
     if df.empty or "is_correct" not in df.columns:
         st.info("Add some responses first.")
     else:
@@ -244,32 +281,158 @@ with tab_insights:
             st.info("Add some responses first.")
         else:
             df["is_correct"] = df["is_correct"].astype(bool)
-
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Responses", len(df))
-            m2.metric("Students", df["student_name"].nunique())
-            m3.metric("Overall accuracy", f"{round(100 * df['is_correct'].mean())}%")
-
-            group_fields = ["topic"]
-            if "subject" in df.columns:
-                group_fields.insert(0, "subject")
-            st.subheader("Accuracy by subject and topic (%)")
-            st.bar_chart(
-                df.groupby(group_fields)["is_correct"].mean().mul(100).round(0)
-            )
-
-            st.subheader("Most-missed questions")
-            missed = (
-                df[~df["is_correct"]]
-                .groupby(["subject", "topic", "question"])
-                .size()
-                .reset_index(name="times_wrong")
-                .sort_values("times_wrong", ascending=False)
-            )
-            if missed.empty:
-                st.success("No wrong answers recorded yet.")
+            classes = sorted(df["class_name"].dropna().unique())
+            if not classes:
+                st.info("No class results are available yet.")
             else:
-                st.dataframe(missed, hide_index=True)
+                selected_class = st.selectbox(
+                    "Class",
+                    classes,
+                    key="insights_class_select",
+                )
+                class_df = df[df["class_name"] == selected_class].copy()
+                mode = st.radio(
+                    "Explore results",
+                    ["Class overview", "Individual student", "Question analysis"],
+                    horizontal=True,
+                    key="insights_mode",
+                )
+
+                if mode == "Individual student":
+                    students = sorted(class_df["student_name"].dropna().unique())
+                    if not students:
+                        st.info("No students are recorded in this class yet.")
+                    else:
+                        student_name = st.selectbox(
+                            "Student",
+                            students,
+                            key="insights_student_select",
+                        )
+                        selected_df = class_df[
+                            class_df["student_name"] == student_name
+                        ].copy()
+                        first, second = st.columns(2)
+                        first.metric("Questions answered", len(selected_df))
+                        accuracy = (
+                            round(100 * selected_df["is_correct"].mean())
+                            if not selected_df.empty
+                            else 0
+                        )
+                        second.metric("Accuracy", f"{accuracy}%")
+                        st.dataframe(
+                            selected_df[
+                                [
+                                    column
+                                    for column in [
+                                        "subject",
+                                        "topic",
+                                        "question",
+                                        "student_answer",
+                                        "correct_answer",
+                                        "is_correct",
+                                        "analysis",
+                                    ]
+                                    if column in selected_df.columns
+                                ]
+                            ],
+                            hide_index=True,
+                            use_container_width=True,
+                        )
+                elif mode == "Question analysis":
+                    subject = st.selectbox(
+                        "Subject",
+                        list(SUBJECT_TOPICS),
+                        key="insights_subject_select",
+                    )
+                    topic = st.selectbox(
+                        "Topic",
+                        SUBJECT_TOPICS[subject],
+                        key="insights_topic_select",
+                    )
+                    question_options = sorted(
+                        class_df.loc[
+                            (class_df["subject"] == subject)
+                            & (class_df["topic"] == topic),
+                            "question",
+                        ].dropna().unique()
+                    )
+                    if not question_options:
+                        st.info("No responses for this subject and topic in this class.")
+                    else:
+                        question = st.selectbox(
+                            "Question",
+                            question_options,
+                            key="insights_question_select",
+                        )
+                        question_df = class_df[
+                            (class_df["subject"] == subject)
+                            & (class_df["topic"] == topic)
+                            & (class_df["question"] == question)
+                        ].copy()
+                        first, second, third = st.columns(3)
+                        first.metric("Responses", len(question_df))
+                        second.metric("Correct", int(question_df["is_correct"].sum()))
+                        third.metric(
+                            "Incorrect",
+                            int((~question_df["is_correct"]).sum()),
+                        )
+                        st.dataframe(
+                            question_df[
+                                [
+                                    column
+                                    for column in [
+                                        "student_name",
+                                        "student_answer",
+                                        "correct_answer",
+                                        "is_correct",
+                                        "analysis",
+                                    ]
+                                    if column in question_df.columns
+                                ]
+                            ].sort_values("student_name"),
+                            hide_index=True,
+                            use_container_width=True,
+                        )
+                else:
+                    first, second, third = st.columns(3)
+                    first.metric("Students", class_df["student_name"].nunique())
+                    second.metric("Responses", len(class_df))
+                    third.metric(
+                        "Accuracy",
+                        f"{round(100 * class_df['is_correct'].mean())}%",
+                    )
+
+                    topic_accuracy = (
+                        class_df.groupby(["subject", "topic"])["is_correct"]
+                        .mean()
+                        .mul(100)
+                        .round(0)
+                        .reset_index(name="accuracy")
+                    )
+                    topic_accuracy["subject_topic"] = (
+                        topic_accuracy["subject"] + " / " + topic_accuracy["topic"]
+                    )
+                    st.subheader("Accuracy by subject and topic")
+                    st.bar_chart(topic_accuracy, x="subject_topic", y="accuracy")
+
+                    st.subheader("Students")
+                    student_summary = (
+                        class_df.groupby("student_name")
+                        .agg(
+                            questions_answered=("question", "count"),
+                            correct_answers=("is_correct", "sum"),
+                            accuracy=("is_correct", "mean"),
+                        )
+                        .reset_index()
+                    )
+                    student_summary["accuracy"] = (
+                        student_summary["accuracy"] * 100
+                    ).round(0)
+                    st.dataframe(
+                        student_summary.sort_values("student_name"),
+                        hide_index=True,
+                        use_container_width=True,
+                    )
 
 # ---------- Error-correction chat ----------
 with tab_chat:
@@ -316,6 +479,19 @@ with tab_chat:
         st.markdown(f"**Question:** {selected_response.get('question', '')}")
         st.markdown(f"**Student's answer:** {selected_response.get('student_answer', '')}")
         st.markdown(f"**Correct answer:** {selected_response.get('correct_answer', '')}")
+        diagnosis = selected_response.get("analysis") or {}
+        if diagnosis.get("misconception"):
+            st.warning(
+                f"**Demonstration diagnosis:** {diagnosis['misconception']}"
+            )
+            st.write(diagnosis.get("misconception_detail", ""))
+            if diagnosis.get("knowledge_gap"):
+                st.write(f"**Knowledge gap:** {diagnosis['knowledge_gap']}")
+            if diagnosis.get("suggested_intervention"):
+                st.write(
+                    f"**Suggested intervention:** "
+                    f"{diagnosis['suggested_intervention']}"
+                )
 
         conversations = st.session_state.setdefault("tutor_conversations", {})
         history = conversations.setdefault(selected_id, [])
@@ -337,7 +513,10 @@ with tab_chat:
             try:
                 with st.spinner("Thinking..."):
                     reply = chat_with_student(
-                        selected_response.get("topic", ""),
+                        (
+                            f"{selected_response.get('subject', '')} / "
+                            f"{selected_response.get('topic', '')}"
+                        ),
                         selected_response.get("question", ""),
                         selected_response.get("correct_answer", ""),
                         selected_response.get("student_answer", ""),
