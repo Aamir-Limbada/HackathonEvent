@@ -375,6 +375,59 @@ st.markdown(
             border-radius: 14px;
         }
 
+        .insight-pie {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 1.25rem;
+            min-height: 190px;
+            padding: 1rem;
+            background: rgba(15, 23, 42, 0.56);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            border-radius: 16px;
+        }
+
+        .insight-pie-circle {
+            width: 150px;
+            height: 150px;
+            flex: 0 0 150px;
+            border: 3px solid rgba(226, 232, 240, 0.82);
+            border-radius: 50%;
+        }
+
+        .insight-pie-legend {
+            display: grid;
+            gap: 0.7rem;
+            color: #edf4ff;
+            font-size: 0.9rem;
+        }
+
+        .insight-pie-legend-item {
+            display: flex;
+            align-items: center;
+            gap: 0.55rem;
+        }
+
+        .insight-pie-swatch {
+            width: 0.75rem;
+            height: 0.75rem;
+            flex: 0 0 0.75rem;
+            border-radius: 50%;
+        }
+
+        @media (max-width: 520px) {
+            .insight-pie {
+                gap: 0.8rem;
+                padding: 0.75rem;
+            }
+
+            .insight-pie-circle {
+                width: 120px;
+                height: 120px;
+                flex-basis: 120px;
+            }
+        }
+
         @keyframes pulse {
             0%, 100% { transform: scale(1); opacity: 0.8; }
             50% { transform: scale(1.5); opacity: 1; }
@@ -484,6 +537,35 @@ def reset_subject_selection():
 
 def reset_question_selection():
     st.session_state["question_select"] = None
+
+
+def render_insight_pie(correct, incorrect):
+    total = correct + incorrect
+    correct_percentage = round(100 * correct / total) if total else 0
+    incorrect_percentage = 100 - correct_percentage
+    st.markdown(
+        f"""
+        <div class="insight-pie">
+            <div class="insight-pie-circle" role="img"
+                 aria-label="Correct: {correct}, Incorrect: {incorrect}"
+                 style="background: conic-gradient(
+                     #34d399 0 {correct_percentage}%,
+                     #fb7185 {correct_percentage}% 100%
+                 );"></div>
+            <div class="insight-pie-legend">
+                <div class="insight-pie-legend-item">
+                    <span class="insight-pie-swatch" style="background:#34d399"></span>
+                    <span>Correct: {correct} ({correct_percentage}%)</span>
+                </div>
+                <div class="insight-pie-legend-item">
+                    <span class="insight-pie-swatch" style="background:#fb7185"></span>
+                    <span>Incorrect: {incorrect} ({incorrect_percentage}%)</span>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 tab_add, tab_questions, tab_view, tab_insights, tab_chat, tab_assistant, tab_library = st.tabs(
@@ -837,9 +919,6 @@ with tab_insights:
                         student_df = class_df[
                             class_df["student_name"] == student_name
                         ].copy()
-                        chart_identity = hashlib.sha256(
-                            f"{selected_class}\0{student_name}".encode("utf-8")
-                        ).hexdigest()[:12]
                         total_correct = int(student_df["is_correct"].sum())
                         total_incorrect = int((~student_df["is_correct"]).sum())
                         accuracy = round(100 * total_correct / len(student_df))
@@ -852,42 +931,7 @@ with tab_insights:
                         metrics[3].metric("Overall Understanding", f"{accuracy}%")
 
                         st.markdown("#### Correct and Incorrect Answers")
-                        overall_chart = pd.DataFrame(
-                            [
-                                {"Result": "Correct", "Answers": total_correct},
-                                {"Result": "Incorrect", "Answers": total_incorrect},
-                            ]
-                        )
-                        st.vega_lite_chart(
-                            overall_chart,
-                            {
-                                "mark": {"type": "arc", "outerRadius": 110},
-                                "encoding": {
-                                    "theta": {
-                                        "field": "Answers",
-                                        "type": "quantitative",
-                                    },
-                                    "color": {
-                                        "field": "Result",
-                                        "type": "nominal",
-                                        "scale": {
-                                            "domain": ["Correct", "Incorrect"],
-                                            "range": ["#34d399", "#fb7185"],
-                                        },
-                                        "legend": {"title": None},
-                                    },
-                                    "tooltip": [
-                                        {"field": "Result", "type": "nominal"},
-                                        {
-                                            "field": "Answers",
-                                            "type": "quantitative",
-                                        },
-                                    ],
-                                },
-                            },
-                            width="stretch",
-                            key=f"student_overall_chart_{chart_identity}",
-                        )
+                        render_insight_pie(total_correct, total_incorrect)
 
                         st.markdown("#### Understanding by Topic")
                         topic_summary = (
@@ -930,66 +974,9 @@ with tab_insights:
                                             f"({topic_row['correct']} correct, "
                                             f"{topic_row['incorrect']} incorrect)"
                                         )
-                                        topic_identity = hashlib.sha256(
-                                            (
-                                                str(topic_row["subject"])
-                                                + "|"
-                                                + str(topic_row["topic"])
-                                            ).encode("utf-8")
-                                        ).hexdigest()[:12]
-                                        topic_chart = pd.DataFrame(
-                                            [
-                                                {
-                                                    "Result": "Correct",
-                                                    "Answers": int(topic_row["correct"]),
-                                                },
-                                                {
-                                                    "Result": "Incorrect",
-                                                    "Answers": int(topic_row["incorrect"]),
-                                                },
-                                            ]
-                                        )
-                                        st.vega_lite_chart(
-                                            topic_chart,
-                                            {
-                                                "mark": {
-                                                    "type": "arc",
-                                                    "outerRadius": 90,
-                                                },
-                                                "encoding": {
-                                                    "theta": {
-                                                        "field": "Answers",
-                                                        "type": "quantitative",
-                                                    },
-                                                    "color": {
-                                                        "field": "Result",
-                                                        "type": "nominal",
-                                                        "scale": {
-                                                            "domain": [
-                                                                "Correct",
-                                                                "Incorrect",
-                                                            ],
-                                                            "range": [
-                                                                "#34d399",
-                                                                "#fb7185",
-                                                            ],
-                                                        },
-                                                        "legend": {"title": None},
-                                                    },
-                                                    "tooltip": [
-                                                        {
-                                                            "field": "Result",
-                                                            "type": "nominal",
-                                                        },
-                                                        {
-                                                            "field": "Answers",
-                                                            "type": "quantitative",
-                                                        },
-                                                    ],
-                                                },
-                                            },
-                                            width="stretch",
-                                            key=f"student_topic_chart_{chart_identity}_{topic_identity}",
+                                        render_insight_pie(
+                                            int(topic_row["correct"]),
+                                            int(topic_row["incorrect"]),
                                         )
 
                         st.markdown("#### Answered Questions")
