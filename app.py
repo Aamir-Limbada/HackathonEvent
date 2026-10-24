@@ -13,6 +13,10 @@ from analysis import analyze_misconceptions, chat_about_misconceptions
 load_dotenv()
 
 st.set_page_config(page_title="TeachAssist AI", page_icon="📚", layout="wide")
+st.markdown(
+    "<style>img[alt='Running...'] { display: none !important; }</style>",
+    unsafe_allow_html=True,
+)
 st.title("📚 TeachAssist AI")
 st.caption(
     "Record student answers and correctness. Gemini identifies possible "
@@ -442,400 +446,394 @@ with tab_insights:
 with tab_chat:
     st.subheader("Misconception make-up")
     st.caption(
-        "Review a student's answers by subject, topic, or question, then use Gemini "
-        "to plan a focused explanation and practice."
+        "Choose an analysis scope first. Gemini runs only after you click "
+        "**Analyze misconceptions**."
     )
 
+    target_type = st.radio(
+        "Analyze",
+        ["Individual student", "Whole class", "All classes"],
+        horizontal=True,
+        key="makeup_target_type",
+    )
     class_options = sorted(db.classes.distinct("class_name"))
-    if not class_options:
-        st.info("Add a class and student responses to get started.")
-    else:
-        selected_class = st.selectbox(
-            "Class",
-            class_options,
-            key="makeup_class",
-        )
+    selected_class = None
+    selected_student = None
+    target_query = {"is_correct": False}
+
+    if target_type in ("Individual student", "Whole class"):
+        if not class_options:
+            st.info("Add a class and student responses to get started.")
+        else:
+            selected_class = st.selectbox(
+                "Class",
+                class_options,
+                index=None,
+                placeholder="Select a class",
+                key="makeup_class_v2",
+            )
+            if selected_class:
+                target_query["class_name"] = selected_class
+
+    if target_type == "Individual student" and selected_class:
         student_options = sorted(
             db.students.distinct("student_name", {"class_name": selected_class})
         )
-        if not student_options:
-            st.info("There are no students recorded in this class yet.")
+        selected_student = st.selectbox(
+            "Student",
+            student_options,
+            index=None,
+            placeholder="Select a student",
+            key="makeup_student_v2",
+        )
+        if selected_student:
+            target_query["student_name"] = selected_student
+
+    subjects = sorted(db.responses.distinct("subject"))
+    selected_subject = st.selectbox(
+        "Subject",
+        subjects,
+        index=None,
+        placeholder="Select a subject",
+        key="makeup_subject_v2",
+    )
+    level = st.radio(
+        "Question scope",
+        ["Subject overview", "Topic", "Question"],
+        horizontal=True,
+        key="makeup_level_v2",
+    )
+
+    selected_topic = None
+    selected_question = None
+    if selected_subject and level in ("Topic", "Question"):
+        topic_query = {
+            key: value
+            for key, value in target_query.items()
+            if key != "is_correct"
+        }
+        topic_query["subject"] = selected_subject
+        topic_options = sorted(
+            topic
+            for topic in db.responses.distinct("topic", topic_query)
+            if topic
+        )
+        selected_topic = st.selectbox(
+            "Topic",
+            topic_options,
+            index=None,
+            placeholder="Select a topic",
+            key="makeup_topic_v2",
+        )
+
+    if selected_subject and level == "Question" and selected_topic:
+        question_query = {
+            **target_query,
+            "subject": selected_subject,
+            "topic": selected_topic,
+        }
+        question_options = sorted(
+            question
+            for question in db.responses.distinct("question", question_query)
+            if question
+        )
+        selected_question = st.selectbox(
+            "Question",
+            question_options,
+            index=None,
+            placeholder="Select a question",
+            key="makeup_question_v2",
+        )
+
+    scope_ready = (
+        bool(class_options)
+        and (target_type == "All classes" or bool(selected_class))
+        and (target_type != "Individual student" or bool(selected_student))
+        and bool(selected_subject)
+        and (level == "Subject overview" or bool(selected_topic))
+        and (level != "Question" or bool(selected_question))
+    )
+
+    if not scope_ready:
+        st.info("Select the class/student and subject scope to continue.")
+    else:
+        focus_query = {**target_query, "subject": selected_subject}
+        if selected_topic:
+            focus_query["topic"] = selected_topic
+        if selected_question:
+            focus_query["question"] = selected_question
+
+        total_incorrect = db.responses.count_documents(focus_query)
+        if total_incorrect == 0:
+            st.info("No incorrect answers are recorded in this selection.")
         else:
-            selected_student = st.selectbox(
-                "Student",
-                student_options,
-                key="makeup_student",
-            )
-            student_filter = {
-                "class_name": selected_class,
-                "student_name": selected_student,
-            }
-            available_subjects = sorted(
-                db.responses.distinct("subject", student_filter)
-            )
-            if not available_subjects:
-                st.info("There are no saved responses for this student yet.")
+            scope_name = selected_subject
+            if target_type == "All classes":
+                scope_name = f"All classes / {scope_name}"
+            elif target_type == "Whole class":
+                scope_name = f"{selected_class} / {scope_name}"
             else:
-                selected_subject = st.selectbox(
-                    "Subject",
-                    available_subjects,
-                    key="makeup_subject",
-                )
-                subject_responses = list(
-                    db.responses.find(
-                        {**student_filter, "subject": selected_subject},
-                        {"class_name": 0, "student_name": 0},
-                    ).sort("topic", 1)
-                )
-                level = st.radio(
-                    "Explore misconceptions",
-                    ["Subject overview", "Topic", "Question"],
-                    horizontal=True,
-                    key="makeup_level",
-                )
-                scoped_responses = subject_responses
-                selected_topic = None
-                selected_question = None
+                scope_name = f"{selected_class} / {selected_student} / {scope_name}"
+            if selected_topic:
+                scope_name = f"{scope_name} / {selected_topic}"
+            if selected_question:
+                scope_name = f"{scope_name} / {selected_question}"
 
-                if level in ("Topic", "Question"):
-                    topic_options = sorted(
-                        {response.get("topic", "") for response in subject_responses}
-                        - {""}
-                    )
-                    if topic_options:
-                        selected_topic = st.selectbox(
-                            "Topic",
-                            topic_options,
-                            key="makeup_topic",
-                        )
-                        scoped_responses = [
-                            response
-                            for response in subject_responses
-                            if response.get("topic") == selected_topic
-                        ]
-
-                if level == "Question":
-                    incorrect_questions = sorted(
+            focus_responses = list(
+                db.responses.find(focus_query)
+                .sort("created_at", -1)
+                .limit(30 if level == "Question" else 60)
+            )
+            evidence_responses = list(focus_responses)
+            focus_indices = list(range(len(focus_responses)))
+            if level == "Question":
+                comparison_query = {
+                    **target_query,
+                    "$nor": [
                         {
-                            response.get("question", "")
-                            for response in scoped_responses
-                            if not response.get("is_correct", False)
-                            and response.get("question")
+                            "subject": selected_subject,
+                            "topic": selected_topic,
+                            "question": selected_question,
                         }
-                    )
-                    question_options = incorrect_questions or sorted(
-                        {
-                            response.get("question", "")
-                            for response in scoped_responses
-                            if response.get("question")
-                        }
-                    )
-                    if question_options:
-                        selected_question = st.selectbox(
-                            "Question",
-                            question_options,
-                            key="makeup_question",
-                        )
-                        scoped_responses = [
-                            response
-                            for response in scoped_responses
-                            if response.get("question") == selected_question
-                        ]
+                    ],
+                }
+                comparison_responses = list(
+                    db.responses.find(comparison_query)
+                    .sort("created_at", -1)
+                    .limit(30)
+                )
+                evidence_responses.extend(comparison_responses)
 
-                scoped_incorrect = [
-                    response
-                    for response in scoped_responses
-                    if not response.get("is_correct", False)
-                ]
-                if not scoped_incorrect:
-                    st.success("No incorrect answers are recorded in this selection.")
-                else:
-                    scope_name = selected_subject
-                    if selected_topic:
-                        scope_name = f"{scope_name} / {selected_topic}"
-                    if selected_question:
-                        scope_name = f"{scope_name} / selected question"
+            examples = [
+                {
+                    "index": index,
+                    "subject": response.get("subject", ""),
+                    "topic": response.get("topic", ""),
+                    "question": response.get("question", ""),
+                    "correct_answer": response.get("correct_answer", ""),
+                    "student_answer": response.get("student_answer", ""),
+                }
+                for index, response in enumerate(evidence_responses)
+            ]
+            analysis_key = hashlib.sha256(
+                json.dumps(
+                    {
+                        "target": target_type,
+                        "class": selected_class,
+                        "student": selected_student,
+                        "scope": scope_name,
+                        "examples": examples,
+                    },
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
 
-                    evidence_responses = list(scoped_incorrect)
-                    focus_indices = list(range(len(evidence_responses)))
-                    if level == "Question":
-                        focus_responses = list(scoped_incorrect)
-                        all_student_errors = list(
-                            db.responses.find(
-                                {**student_filter, "is_correct": False}
+            if not os.getenv("GEMINI_API_KEY"):
+                st.warning(
+                    "Add GEMINI_API_KEY to .env to generate the overview and use "
+                    "the make-up chat."
+                )
+            analyze_clicked = st.button(
+                "Analyze misconceptions",
+                type="primary",
+                key=f"analyze_makeup_{analysis_key}",
+                disabled=not bool(os.getenv("GEMINI_API_KEY")),
+            )
+            analysis_cache = st.session_state.setdefault(
+                "misconception_analysis_cache", {}
+            )
+            if analyze_clicked:
+                try:
+                    with st.spinner("Analyzing answers with Gemini..."):
+                        result = analyze_misconceptions(examples, focus_indices)
+                    diagnosis_by_index = {}
+                    for pattern in result["patterns"]:
+                        for index in pattern["evidence_indices"]:
+                            diagnosis_by_index.setdefault(
+                                index,
+                                {
+                                    "misconception": pattern["label"],
+                                    "misconception_detail": pattern["explanation"],
+                                    "confidence": pattern["confidence"],
+                                },
                             )
-                            .sort("created_at", -1)
-                            .limit(100)
-                        )
-                        comparison_responses = [
-                            response
-                            for response in all_student_errors
-                            if not (
-                                response.get("subject") == selected_subject
-                                and response.get("topic") == selected_topic
-                                and response.get("question") == selected_question
-                            )
-                        ][:30]
-                        evidence_responses = focus_responses + comparison_responses
-                        focus_indices = list(range(len(focus_responses)))
-
-                    examples = [
-                        {
-                            "index": index,
-                            "subject": response.get("subject", ""),
-                            "topic": response.get("topic", ""),
-                            "question": response.get("question", ""),
-                            "correct_answer": response.get("correct_answer", ""),
-                            "student_answer": response.get("student_answer", ""),
-                        }
-                        for index, response in enumerate(evidence_responses)
-                    ]
-                    analysis_key = hashlib.sha256(
-                        json.dumps(
+                    for index, response in enumerate(evidence_responses):
+                        diagnosis = diagnosis_by_index.get(index)
+                        db.responses.update_one(
+                            {"_id": response["_id"]},
                             {
-                                "class": selected_class,
-                                "student": selected_student,
-                                "scope": scope_name,
-                                "examples": examples,
-                            },
-                            sort_keys=True,
-                        ).encode("utf-8")
-                    ).hexdigest()
-
-                    if not tab_chat.open:
-                        st.info(
-                            "Open Misconception make-up to generate an AI overview "
-                            "for the selected answers."
-                        )
-                    elif not os.getenv("GEMINI_API_KEY"):
-                        st.warning(
-                            "Add GEMINI_API_KEY to .env to generate AI misconception "
-                            "overviews and use the make-up chat."
-                        )
-                    else:
-                        analysis_cache = st.session_state.setdefault(
-                            "misconception_analysis_cache", {}
-                        )
-                        if analysis_key not in analysis_cache:
-                            try:
-                                with st.spinner(
-                                    "Gemini is checking the answer evidence for "
-                                    "supported patterns..."
-                                ):
-                                    result = analyze_misconceptions(
-                                        examples,
-                                        focus_indices,
-                                    )
-                                analysis_cache[analysis_key] = result
-
-                                diagnosis_by_index = {}
-                                for pattern in result["patterns"]:
-                                    for index in pattern["evidence_indices"]:
-                                        diagnosis_by_index.setdefault(
-                                            index,
-                                            {
-                                                "misconception": pattern["label"],
-                                                "misconception_detail": pattern[
-                                                    "explanation"
-                                                ],
-                                                "confidence": pattern["confidence"],
-                                            },
-                                        )
-                                for index, response in enumerate(evidence_responses):
-                                    diagnosis = diagnosis_by_index.get(index)
-                                    saved_analysis = {
+                                "$set": {
+                                    "analysis": {
                                         "source": "gemini",
                                         "version": 2,
-                                        "misconception": (
-                                            diagnosis["misconception"]
-                                            if diagnosis
-                                            else None
-                                        ),
-                                        "misconception_detail": (
-                                            diagnosis["misconception_detail"]
-                                            if diagnosis
-                                            else None
-                                        ),
-                                        "confidence": (
-                                            diagnosis["confidence"]
-                                            if diagnosis
-                                            else None
-                                        ),
+                                        "misconception": diagnosis["misconception"]
+                                        if diagnosis
+                                        else None,
+                                        "misconception_detail": diagnosis[
+                                            "misconception_detail"
+                                        ]
+                                        if diagnosis
+                                        else None,
+                                        "confidence": diagnosis["confidence"]
+                                        if diagnosis
+                                        else None,
                                         "uncertain": index
                                         in result["uncertain_indices"],
                                     }
-                                    db.responses.update_one(
-                                        {"_id": response["_id"]},
-                                        {"$set": {"analysis": saved_analysis}},
-                                    )
-                            except Exception as e:
-                                st.error(f"Gemini could not analyze these answers: {e}")
-                                analysis_cache.pop(analysis_key, None)
-                                result = None
-                        else:
-                            result = analysis_cache[analysis_key]
+                                }
+                            },
+                        )
+                    analysis_cache[analysis_key] = result
+                except Exception as e:
+                    st.error(f"Gemini could not analyze these answers: {e}")
 
-                        if result:
-                            st.markdown("#### AI overview")
-                            st.info(result["overview"])
-                            first, second, third = st.columns(3)
-                            first.metric("Incorrect answers", len(scoped_incorrect))
-                            second.metric(
-                                "Evidence-backed patterns",
-                                len(result["patterns"]),
-                            )
-                            third.metric(
-                                "Answers needing more evidence",
-                                len(result["uncertain_indices"]),
-                            )
+            result = analysis_cache.get(analysis_key)
+            if result:
+                if total_incorrect > len(focus_responses):
+                    st.caption(
+                        f"Analyzed {len(focus_responses)} of {total_incorrect} "
+                        "incorrect answers in this scope."
+                    )
+                st.markdown("#### AI overview")
+                st.info(result["overview"])
+                first, second, third = st.columns(3)
+                first.metric("Incorrect answers", total_incorrect)
+                second.metric("Evidence-backed patterns", len(result["patterns"]))
+                third.metric(
+                    "Answers needing more evidence",
+                    len(result["uncertain_indices"]),
+                )
 
-                            if result["patterns"]:
-                                st.markdown("#### Possible misconceptions")
-                                for pattern in result["patterns"]:
-                                    with st.container(border=True):
-                                        st.markdown(
-                                            f"**{pattern['label']}** "
-                                            f"({pattern['confidence']} confidence)"
-                                        )
-                                        st.write(pattern["explanation"])
-                                        for index in pattern["evidence_indices"]:
-                                            if index >= len(evidence_responses):
-                                                continue
-                                            response = evidence_responses[index]
-                                            st.caption(
-                                                f"{response.get('subject', '')} / "
-                                                f"{response.get('topic', '')} — "
-                                                f"{response.get('question', '')}"
-                                            )
-                                            st.write(
-                                                f"Student answer: "
-                                                f"{response.get('student_answer', '')} "
-                                                f"| Correct answer: "
-                                                f"{response.get('correct_answer', '')}"
-                                            )
-                            else:
-                                st.success(
-                                    "Gemini did not find enough evidence to assign "
-                                    "a specific misconception."
+                if result["patterns"]:
+                    st.markdown("#### Possible misconceptions")
+                    for pattern in result["patterns"]:
+                        with st.container(border=True):
+                            st.markdown(
+                                f"**{pattern['label']}** "
+                                f"({pattern['confidence']} confidence)"
+                            )
+                            st.write(pattern["explanation"])
+                            for index in pattern["evidence_indices"]:
+                                if index >= len(evidence_responses):
+                                    continue
+                                response = evidence_responses[index]
+                                st.caption(
+                                    f"{response.get('subject', '')} / "
+                                    f"{response.get('topic', '')} ? "
+                                    f"{response.get('question', '')}"
                                 )
+                                st.write(
+                                    f"Student answer: "
+                                    f"{response.get('student_answer', '')} | "
+                                    f"Correct answer: "
+                                    f"{response.get('correct_answer', '')}"
+                                )
+                else:
+                    st.success(
+                        "Gemini did not find enough evidence to assign a specific "
+                        "misconception."
+                    )
 
-                            uncertain = [
-                                evidence_responses[index]
-                                for index in result["uncertain_indices"]
-                                if index < len(evidence_responses)
-                            ]
-                            if uncertain:
-                                with st.expander(
-                                    "Incorrect answers that need more evidence"
-                                ):
-                                    st.dataframe(
-                                        pd.DataFrame(
-                                            [
-                                                {
-                                                    "subject": item.get("subject", ""),
-                                                    "topic": item.get("topic", ""),
-                                                    "question": item.get("question", ""),
-                                                    "student_answer": item.get(
-                                                        "student_answer", ""
-                                                    ),
-                                                    "correct_answer": item.get(
-                                                        "correct_answer", ""
-                                                    ),
-                                                }
-                                                for item in uncertain
-                                            ]
-                                        ),
-                                        hide_index=True,
-                                        width="stretch",
-                                    )
-
-                            if level == "Question":
-                                related = [
-                                    evidence_responses[index]
-                                    for index in result["related_error_indices"]
-                                    if index < len(evidence_responses)
-                                    and index not in focus_indices
+                uncertain = [
+                    evidence_responses[index]
+                    for index in result["uncertain_indices"]
+                    if index < len(evidence_responses)
+                ]
+                if uncertain:
+                    with st.expander("Incorrect answers that need more evidence"):
+                        st.dataframe(
+                            pd.DataFrame(
+                                [
+                                    {
+                                        "subject": item.get("subject", ""),
+                                        "topic": item.get("topic", ""),
+                                        "question": item.get("question", ""),
+                                        "student_answer": item.get("student_answer", ""),
+                                        "correct_answer": item.get("correct_answer", ""),
+                                    }
+                                    for item in uncertain
                                 ]
-                                st.markdown(
-                                    "#### Similar errors across other topics or subjects"
-                                )
-                                if related:
-                                    st.caption(
-                                        "Gemini found a possible connection from the "
-                                        "student's answer evidence."
-                                    )
-                                    st.dataframe(
-                                        pd.DataFrame(
-                                            [
-                                                {
-                                                    "subject": item.get("subject", ""),
-                                                    "topic": item.get("topic", ""),
-                                                    "question": item.get("question", ""),
-                                                    "student_answer": item.get(
-                                                        "student_answer", ""
-                                                    ),
-                                                    "correct_answer": item.get(
-                                                        "correct_answer", ""
-                                                    ),
-                                                }
-                                                for item in related
-                                            ]
-                                        ),
-                                        hide_index=True,
-                                        width="stretch",
-                                    )
-                                else:
-                                    st.caption(
-                                        "Gemini did not find enough evidence to link "
-                                        "this answer to another error."
-                                    )
+                            ),
+                            hide_index=True,
+                            width="stretch",
+                        )
 
-                            chat_context = (
-                                f"Focus: {scope_name}\n"
-                                f"AI misconception overview: {result['overview']}\n"
-                                "Evidence-based patterns: "
-                                f"{json.dumps(result['patterns'], ensure_ascii=True)}\n"
-                                "Help the teacher explain these results and plan "
-                                "supportive, age-appropriate make-up practice. Be "
-                                "clear when the answer evidence is insufficient; do "
-                                "not claim to know the student's hidden reasoning."
+                if level == "Question":
+                    related = [
+                        evidence_responses[index]
+                        for index in result["related_error_indices"]
+                        if index < len(evidence_responses)
+                        and index not in focus_indices
+                    ]
+                    st.markdown("#### Similar errors across other topics or subjects")
+                    if related:
+                        st.caption(
+                            "Gemini found a possible connection from the answer evidence."
+                        )
+                        st.dataframe(
+                            pd.DataFrame(
+                                [
+                                    {
+                                        "subject": item.get("subject", ""),
+                                        "topic": item.get("topic", ""),
+                                        "question": item.get("question", ""),
+                                        "student_answer": item.get("student_answer", ""),
+                                        "correct_answer": item.get("correct_answer", ""),
+                                    }
+                                    for item in related
+                                ]
+                            ),
+                            hide_index=True,
+                            width="stretch",
+                        )
+                    else:
+                        st.caption(
+                            "Gemini did not find enough evidence to link this answer "
+                            "to another error."
+                        )
+
+                chat_context = (
+                    f"Focus: {scope_name}\n"
+                    f"AI misconception overview: {result['overview']}\n"
+                    "Evidence-based patterns: "
+                    f"{json.dumps(result['patterns'], ensure_ascii=True)}\n"
+                    "Help the teacher explain these results and plan supportive, "
+                    "age-appropriate make-up practice. Be clear when answer evidence "
+                    "is insufficient; do not claim to know hidden reasoning."
+                )
+                conversations = st.session_state.setdefault(
+                    "misconception_conversations", {}
+                )
+                history = conversations.setdefault(analysis_key, [])
+                if st.button(
+                    "Clear conversation",
+                    key=f"clear_makeup_{analysis_key}",
+                ):
+                    conversations[analysis_key] = []
+                    st.rerun()
+                for turn in history:
+                    with st.chat_message(turn["role"]):
+                        st.markdown(turn["content"])
+                prompt = st.chat_input(
+                    "Ask Gemini to explain a pattern or suggest practice",
+                    key=f"makeup_chat_{analysis_key}",
+                )
+                if prompt and prompt.strip():
+                    prompt = prompt.strip()
+                    try:
+                        with st.spinner("Preparing a focused response..."):
+                            reply = chat_about_misconceptions(
+                                chat_context,
+                                history,
+                                prompt,
                             )
-                            chat_key = (
-                                f"{selected_class}|{selected_student}|{analysis_key}"
-                            )
-                            conversations = st.session_state.setdefault(
-                                "misconception_conversations", {}
-                            )
-                            history = conversations.setdefault(chat_key, [])
-                            if st.button(
-                                "Clear conversation",
-                                key=f"clear_makeup_{analysis_key}",
-                            ):
-                                conversations[chat_key] = []
-                                st.rerun()
-                            for turn in history:
-                                with st.chat_message(turn["role"]):
-                                    st.markdown(turn["content"])
-                            prompt = st.chat_input(
-                                "Ask Gemini to explain a pattern or suggest practice",
-                                key=f"makeup_chat_{analysis_key}",
-                            )
-                            if prompt and prompt.strip():
-                                prompt = prompt.strip()
-                                try:
-                                    with st.spinner("Preparing a focused response..."):
-                                        reply = chat_about_misconceptions(
-                                            chat_context,
-                                            history,
-                                            prompt,
-                                        )
-                                except Exception as e:
-                                    st.error(f"Gemini could not reply: {e}")
-                                else:
-                                    history.extend(
-                                        [
-                                            {"role": "user", "content": prompt},
-                                            {"role": "assistant", "content": reply},
-                                        ]
-                                    )
-                                    st.rerun()
+                    except Exception as e:
+                        st.error(f"Gemini could not reply: {e}")
+                    else:
+                        history.extend(
+                            [
+                                {"role": "user", "content": prompt},
+                                {"role": "assistant", "content": reply},
+                            ]
+                        )
+                        st.rerun()
