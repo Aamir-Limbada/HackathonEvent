@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from pymongo import MongoClient
 
@@ -13,48 +14,293 @@ from analysis import analyze_misconceptions, chat_about_misconceptions
 load_dotenv()
 
 st.set_page_config(page_title="AIM Assist", page_icon="🎯", layout="wide")
+
+components.html(
+    """
+    <style>
+        body { overflow: hidden; }
+        .portal-splash {
+            position: fixed;
+            inset: 0;
+            background: radial-gradient(circle at top, rgba(102,126,234,0.32), transparent 38%),
+                        linear-gradient(135deg, #050b14 0%, #0f172a 40%, #171f32 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 99999;
+            animation: fadeIn 0.8s ease-out;
+        }
+        .portal-splash.hidden {
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.8s ease, visibility 0.8s ease;
+        }
+        .portal-panel {
+            background: rgba(15, 23, 42, 0.7);
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            box-shadow: 0 30px 80px rgba(11, 18, 30, 0.8);
+            border-radius: 28px;
+            padding: 42px 52px;
+            text-align: center;
+            backdrop-filter: blur(14px);
+            transform: translateY(0);
+            animation: riseIn 0.9s cubic-bezier(.2,.8,.2,1);
+        }
+        .portal-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            border: 1px solid rgba(96, 165, 250, 0.38);
+            background: rgba(96,165,250,0.08);
+            color: #dfeeff;
+            border-radius: 999px;
+            padding: 8px 16px;
+            font-size: 12px;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            margin-bottom: 18px;
+            font-weight: 700;
+        }
+        .portal-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #7dd3fc;
+            box-shadow: 0 0 20px rgba(125,211,252,0.9);
+            animation: pulse 1.6s ease-in-out infinite;
+        }
+        .portal-title {
+            font-size: clamp(2.5rem, 5vw, 4rem);
+            margin: 0;
+            font-weight: 800;
+            letter-spacing: -0.06em;
+            background: linear-gradient(135deg, #f8fbff 0%, #b9d7ff 28%, #8eb8ff 52%, #d7c0ff 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+        .portal-subtitle {
+            margin-top: 10px;
+            color: rgba(226,232,240,0.8);
+            font-size: 1rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+        .portal-loader {
+            margin-top: 26px;
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+        }
+        .portal-loader span {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #8ab4ff, #d4a9ff);
+            animation: bounce 1.1s ease-in-out infinite;
+        }
+        .portal-loader span:nth-child(2) { animation-delay: 0.15s; }
+        .portal-loader span:nth-child(3) { animation-delay: 0.3s; }
+        @keyframes riseIn { 0% { opacity: 0; transform: translateY(30px) scale(0.98); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes pulse { 0%, 100% { transform: scale(1); opacity: 0.8; } 50% { transform: scale(1.5); opacity: 1; } }
+        @keyframes bounce { 0%, 80%, 100% { transform: translateY(0); opacity: 0.4; } 40% { transform: translateY(-12px); opacity: 1; } }
+    </style>
+    <div id="portal-splash" class="portal-splash">
+      <div class="portal-panel">
+        <div class="portal-badge"><span class="portal-dot"></span> Learning intelligence</div>
+        <h1 class="portal-title">AIM Assist</h1>
+        <div class="portal-subtitle">Opening your teaching insight portal</div>
+        <div class="portal-loader"><span></span><span></span><span></span></div>
+      </div>
+    </div>
+    <script>
+      setTimeout(function() {
+        const splash = document.getElementById('portal-splash');
+        if (splash) splash.classList.add('hidden');
+      }, 1800);
+    </script>
+    """,
+    height=0,
+    scrolling=False,
+)
+
 st.markdown(
     """
     <style>
-        img[alt='Running...'] { display: none !important; }
-
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
         html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] {
-            background: linear-gradient(135deg, #07111f 0%, #0d1b2a 35%, #16263f 100%);
+            background: radial-gradient(circle at top left, rgba(96,165,250,0.18), transparent 26%),
+                        radial-gradient(circle at bottom right, rgba(168,85,247,0.18), transparent 32%),
+                        linear-gradient(135deg, #07111f 0%, #0d1b2a 30%, #13243b 100%);
             color: #edf4ff;
             font-family: 'Inter', sans-serif;
         }
 
         .block-container {
-            padding-top: 2rem;
+            padding-top: 1.5rem;
             padding-bottom: 3rem;
             max-width: 1500px;
         }
 
         [data-testid="stHeader"] {
             background: rgba(8, 15, 27, 0.6);
-            backdrop-filter: blur(8px);
+            backdrop-filter: blur(10px);
+        }
+
+        [data-stale="true"] {
+            opacity: 1 !important;
+            filter: none !important;
+        }
+
+        [data-testid="stStatusWidget"] {
+            display: none !important;
+        }
+
+        body:has([data-stale="true"])::after {
+            content: "";
+            position: fixed;
+            top: 1rem;
+            right: 1.25rem;
+            z-index: 100000;
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(191, 219, 254, 0.28);
+            border-top-color: #93c5fd;
+            border-right-color: #c4b5fd;
+            border-radius: 50%;
+            animation: loadingSpin 0.75s linear infinite;
+            pointer-events: none;
+        }
+
+        .main-header {
+            position: relative;
+            padding: 1.4rem 1.5rem 0.8rem;
+            margin-bottom: 1.2rem;
+            background: linear-gradient(135deg, rgba(15,23,42,0.72), rgba(30,41,59,0.58));
+            border: 1px solid rgba(148,163,184,0.18);
+            border-radius: 24px;
+            box-shadow: 0 24px 60px rgba(15, 23, 42, 0.35);
+            overflow: hidden;
+            animation: fadeUp 0.8s ease-out both;
+        }
+
+        .main-header::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(120deg, rgba(59,130,246,0.18), rgba(168,85,247,0.12), transparent 70%);
+            pointer-events: none;
+        }
+
+        .main-header h1 {
+            margin: 0;
+            font-size: clamp(2.2rem, 4vw, 3.2rem);
+            font-weight: 800;
+            letter-spacing: -0.06em;
+            position: relative;
+            z-index: 1;
+        }
+
+        .main-header p {
+            position: relative;
+            z-index: 1;
+            margin: 0.8rem 0 0;
+            color: rgba(226,232,240,0.8);
+            font-size: 1rem;
+        }
+
+        .status-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(96,165,250,0.12);
+            border: 1px solid rgba(147,197,253,0.25);
+            color: #dfeeff;
+            border-radius: 999px;
+            padding: 7px 12px;
+            margin-bottom: 1rem;
+            font-size: 0.72rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            font-weight: 700;
+        }
+
+        .status-chip-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: #7dd3fc;
+            box-shadow: 0 0 18px rgba(125,211,252,0.9);
+            animation: pulse 1.8s ease-in-out infinite;
+        }
+
+        .floating-card {
+            background: rgba(15, 23, 42, 0.74);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            border-radius: 18px;
+            padding: 1rem 1.1rem;
+            box-shadow: 0 18px 36px rgba(2,6,23,0.18);
+            transition: transform 0.2s ease, border-color 0.2s ease;
+            animation: fadeUp 0.85s ease-out both;
+        }
+
+        .floating-card:hover {
+            transform: translateY(-3px);
+            border-color: rgba(147,197,253,0.35);
         }
 
         .stTabs [role="tablist"] {
-            gap: 0.5rem;
+            position: relative;
+            gap: 0.7rem;
             margin-bottom: 1rem;
+            background: rgba(15, 23, 42, 0.28);
+            padding: 0.4rem;
+            border-radius: 18px;
+            border: 1px solid rgba(148,163,184,0.14);
         }
 
         .stTabs [role="tab"] {
-            background: rgba(148, 163, 184, 0.08);
-            border: 1px solid rgba(148, 163, 184, 0.2);
-            border-radius: 12px 12px 0 0;
+            position: relative;
+            z-index: 1;
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 999px;
             color: #dfe9ff;
-            padding: 0.7rem 1.1rem;
-            font-weight: 600;
+            padding: 0.8rem 1.1rem;
+            font-weight: 700;
+            transition: color 0.2s ease, border-color 0.2s ease;
         }
 
         .stTabs [role="tab"][aria-selected="true"] {
-            background: linear-gradient(135deg, #5b7cff 0%, #9f56ff 100%);
-            border-color: rgba(147, 197, 253, 0.7);
-            box-shadow: 0 10px 24px rgba(91, 124, 255, 0.35);
+            color: #ffffff;
+            border-color: transparent;
+            box-shadow: none;
+        }
+
+        .stTabs [data-baseweb="tab-highlight"] {
+            z-index: 0;
+            height: 100%;
+            top: 0;
+            bottom: auto;
+            border: 1px solid rgba(147, 197, 253, 0.36);
+            border-radius: 999px;
+            background: linear-gradient(
+                120deg,
+                rgba(59, 130, 246, 0.24),
+                rgba(168, 85, 247, 0.2)
+            );
+            box-shadow: 0 8px 24px rgba(91, 124, 255, 0.14);
+            backdrop-filter: blur(10px);
+            transition:
+                transform 380ms cubic-bezier(0.2, 0.8, 0.2, 1),
+                width 380ms cubic-bezier(0.2, 0.8, 0.2, 1),
+                height 380ms cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+
+        .stTabs [data-baseweb="tab-border"] {
+            display: none;
         }
 
         div[data-testid="stVerticalBlock"] > div > div {
@@ -65,46 +311,94 @@ st.markdown(
             background: linear-gradient(135deg, #4f8cff 0%, #7a4dff 100%);
             color: white;
             border: none;
-            border-radius: 10px;
-            font-weight: 700;
-            padding: 0.65rem 1.2rem;
-            box-shadow: 0 10px 24px rgba(85, 115, 255, 0.35);
+            border-radius: 12px;
+            font-weight: 800;
+            padding: 0.7rem 1.3rem;
+            box-shadow: 0 10px 20px rgba(85, 115, 255, 0.28);
+            transition: transform 0.18s ease, box-shadow 0.18s ease;
         }
 
         .stButton > button:hover {
-            opacity: 0.96;
-            transform: translateY(-1px);
+            transform: translateY(-2px);
+            box-shadow: 0 18px 24px rgba(85, 115, 255, 0.36);
+        }
+
+        .stButton > button:active {
+            transform: translateY(0);
         }
 
         .stDataFrame {
-            border-radius: 14px;
+            border-radius: 16px;
             overflow: hidden;
-            border: 1px solid rgba(148, 163, 184, 0.2);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            box-shadow: 0 18px 36px rgba(2,6,23,0.12);
         }
 
         .stMetric {
-            background: rgba(15, 23, 42, 0.7);
-            border: 1px solid rgba(148, 163, 184, 0.2);
-            border-radius: 14px;
-            padding: 0.8rem 1rem;
+            background: rgba(15, 23, 42, 0.72);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            border-radius: 16px;
+            padding: 0.9rem 1rem;
+            box-shadow: 0 12px 26px rgba(2,6,23,0.15);
         }
 
         section[data-testid="stSidebar"] {
-            background: rgba(11, 18, 30, 0.76);
+            background: rgba(11, 18, 30, 0.82);
             border-right: 1px solid rgba(148, 163, 184, 0.14);
+            backdrop-filter: blur(12px);
         }
 
-        .stSelectbox, .stTextInput, .stTextArea {
-            border-radius: 10px;
+        .stSelectbox > div > div, .stTextInput > div > div, .stTextArea > div > div {
+            border-radius: 12px;
+            border: 1px solid rgba(148,163,184,0.2) !important;
+        }
+
+        .stExpander {
+            background: rgba(15, 23, 42, 0.45);
+            border: 1px solid rgba(148,163,184,0.18);
+            border-radius: 16px;
+        }
+
+        .stAlert {
+            border-radius: 14px;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 0.8; }
+            50% { transform: scale(1.5); opacity: 1; }
+        }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(12px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes loadingSpin {
+            to { transform: rotate(360deg); }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                scroll-behavior: auto !important;
+                transition-duration: 0.01ms !important;
+            }
         }
     </style>
     """,
     unsafe_allow_html=True,
 )
-st.title("🎯 AIM Assist")
-st.caption(
-    "AI-powered support for recording answers, tracking class performance, and "
-    "spotting likely misconceptions."
+
+st.markdown(
+    """
+    <div class="main-header">
+        <div class="status-chip"><span class="status-chip-dot"></span> Portal online</div>
+        <h1>🎯 AIM Assist</h1>
+        <p>AI-powered support for recording answers, tracking class performance, and spotting likely misconceptions.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
 SUBJECT_TOPICS = {
