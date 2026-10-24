@@ -50,15 +50,55 @@ AI results are suggestions. Check them before using them with students.
 | ✅ | Generate revision packs and ask Gemini to check their practice answers, with one regeneration attempt if a check fails |
 | ✅ | Keep packs in draft until teacher approval; record agent actions in MongoDB |
 | ✅ | Show incorrect answers that could not confidently be grouped |
-| ✅ | Atlas Search for full-text searching across responses |
-| ✅ | Teacher accounts and access control |
-| ✅ | Automated evaluation against a labelled set of student answers |
-| ✅ | Gemini Interactions API integration |
+| ⬜ | Atlas Search for full-text searching across responses |
+| ⬜ | Teacher accounts and access control |
+| ⬜ | Automated evaluation against a labelled set of student answers |
+| ⬜ | Gemini Interactions API integration |
 
 Gemini is configured through `GEMINI_MODEL` in `.env` (currently set to
 `gemini-4-argon` in the local setup). Model access depends on the API account.
 The app uses the Google Gen AI SDK's content-generation API; Gemini 4 Argon
 availability and challenge eligibility have not been verified from this repository.
+
+## How the tools work together
+
+**MongoDB Atlas is the app's shared data store.** The Streamlit app saves classes,
+students, questions, responses, and teaching resources there. When a teacher starts
+the Class Agent, it reads matching responses from `responses` instead of asking the
+teacher to upload a CSV. Assessments are written back to those same response
+documents, while the run status, step-by-step action record, review state, and draft
+packs are saved in `agent_runs`. Approved packs are added to `teaching_resources`.
+This lets a teacher return to a run and review what happened.
+
+**Gemini 4 Argon is the configured reasoning model.** The app reads the model ID
+from `GEMINI_MODEL` and sends requests through the Google Gen AI SDK. It is used for
+response assessment, misconception analysis, teaching notes and chat, and drafting
+and checking Class Agent practice material. For the agent, the assessment includes
+a score, correctness decision, confidence, and evidence-supported misconception
+details. The app also uses the configured Gemini embedding model to turn a
+misconception label and explanation into a vector. Setting the model ID in the
+configuration does not by itself confirm that the API key has access to Argon; a
+successful live API call is needed to verify that.
+
+**Atlas Vector Search helps merge differently worded misconceptions.** Gemini first
+identifies misconception patterns from the selected answers. The app embeds each
+pattern, stores its label and embedding in `misconception_vector_labels`, then
+queries the Atlas Vector Search index for similar saved labels. A result is reused
+as the canonical label only when its cosine-similarity score is at least `0.82`;
+otherwise the new label stays separate. This semantic comparison is distinct from
+ordinary exact-text matching and helps avoid splitting one idea just because
+students or Gemini phrase it differently. The required index is created manually
+in Atlas; see the setup details below.
+
+**The Class Agent is a multi-step workflow that delivers a teacher-reviewable
+result, not just a chat response.** It gathers saved answers, assesses them,
+recovers from per-answer failures with a retry path, groups supported
+misconceptions, drafts a targeted revision pack for each subject/topic group, and
+checks the pack's practice answers. It pauses for a teacher when marks are
+uncertain or before packs can be released. The teacher can review flagged answers
+and must approve verified packs before they are saved to the Teaching Library.
+Actions and failures are recorded in MongoDB so the run has an inspectable history.
+This makes the teacher the decision-maker for student-facing material.
 
 ## How the Class Agent works
 
