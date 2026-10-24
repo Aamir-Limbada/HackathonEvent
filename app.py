@@ -9,11 +9,16 @@ import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from pymongo import MongoClient
 
-from analysis import analyze_misconceptions, chat_about_misconceptions
+from analysis import (
+    analyze_misconceptions,
+    chat_about_education,
+    chat_about_misconceptions,
+    generate_teaching_notes,
+)
 
 load_dotenv()
 
-st.set_page_config(page_title="AIM Assist", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="AIM Assist", page_icon="📘", layout="wide")
 
 components.html(
     """
@@ -108,7 +113,7 @@ components.html(
     </style>
     <div id="portal-splash" class="portal-splash">
       <div class="portal-panel">
-        <div class="portal-badge"><span class="portal-dot"></span> Learning intelligence</div>
+        <div class="portal-badge"><span class="portal-dot"></span> Learning Intelligence</div>
         <h1 class="portal-title">AIM Assist</h1>
         <div class="portal-subtitle">Opening your teaching insight portal</div>
         <div class="portal-loader"><span></span><span></span><span></span></div>
@@ -141,7 +146,7 @@ st.markdown(
         .block-container {
             padding-top: 1.5rem;
             padding-bottom: 3rem;
-            max-width: 1500px;
+            max-width: 1740px;
         }
 
         [data-testid="stHeader"] {
@@ -176,8 +181,9 @@ st.markdown(
 
         .main-header {
             position: relative;
-            padding: 1.4rem 1.5rem 0.8rem;
-            margin-bottom: 1.2rem;
+            padding: 2rem 2rem 1.6rem;
+            margin-bottom: 1.5rem;
+            text-align: center;
             background: linear-gradient(135deg, rgba(15,23,42,0.72), rgba(30,41,59,0.58));
             border: 1px solid rgba(148,163,184,0.18);
             border-radius: 24px;
@@ -208,7 +214,12 @@ st.markdown(
             z-index: 1;
             margin: 0.8rem 0 0;
             color: rgba(226,232,240,0.8);
-            font-size: 1rem;
+            font-size: 1.08rem;
+            letter-spacing: 0.06em;
+        }
+
+        .main-header .status-chip {
+            justify-content: center;
         }
 
         .status-chip {
@@ -253,50 +264,51 @@ st.markdown(
 
         .stTabs [role="tablist"] {
             position: relative;
-            gap: 0.7rem;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 0.45rem;
             margin-bottom: 1rem;
             background: rgba(15, 23, 42, 0.28);
             padding: 0.4rem;
             border-radius: 18px;
             border: 1px solid rgba(148,163,184,0.14);
+            overflow: visible !important;
+            height: auto !important;
         }
 
         .stTabs [role="tab"] {
             position: relative;
             z-index: 1;
+            flex: 1 1 145px;
+            justify-content: center;
+            white-space: nowrap;
             background: transparent;
             border: 1px solid transparent;
             border-radius: 999px;
             color: #dfe9ff;
-            padding: 0.8rem 1.1rem;
+            padding: 0.7rem 0.8rem;
             font-weight: 700;
             transition: color 0.2s ease, border-color 0.2s ease;
         }
 
         .stTabs [role="tab"][aria-selected="true"] {
             color: #ffffff;
-            border-color: transparent;
-            box-shadow: none;
-        }
-
-        .stTabs [data-baseweb="tab-highlight"] {
-            z-index: 0;
-            height: 100%;
-            top: 0;
-            bottom: auto;
-            border: 1px solid rgba(147, 197, 253, 0.36);
-            border-radius: 999px;
+            border-color: rgba(147, 197, 253, 0.36);
             background: linear-gradient(
                 120deg,
                 rgba(59, 130, 246, 0.24),
                 rgba(168, 85, 247, 0.2)
             );
-            box-shadow: 0 8px 24px rgba(91, 124, 255, 0.14);
-            backdrop-filter: blur(10px);
-            transition:
-                transform 380ms cubic-bezier(0.2, 0.8, 0.2, 1),
-                width 380ms cubic-bezier(0.2, 0.8, 0.2, 1),
-                height 380ms cubic-bezier(0.2, 0.8, 0.2, 1);
+            box-shadow: none;
+        }
+
+        .stTabs [data-baseweb="tab-highlight"] {
+            display: none;
+        }
+
+        .stTabs [role="tablist"] > button:not([role="tab"]) {
+            display: none !important;
         }
 
         .stTabs [data-baseweb="tab-border"] {
@@ -393,9 +405,9 @@ st.markdown(
 st.markdown(
     """
     <div class="main-header">
-        <div class="status-chip"><span class="status-chip-dot"></span> Portal online</div>
-        <h1>🎯 AIM Assist</h1>
-        <p>AI-powered support for recording answers, tracking class performance, and spotting likely misconceptions.</p>
+        <div class="status-chip"><span class="status-chip-dot"></span> Portal Online</div>
+        <h1>📘 AIM Assist</h1>
+        <p>See the thinking. Shape the learning.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -442,6 +454,10 @@ def get_db():
         [("subject", 1), ("topic", 1), ("question", 1)],
         unique=True,
     )
+    database.teaching_resources.create_index([("created_at", -1)])
+    database.teaching_resources.create_index(
+        [("subject", 1), ("topic", 1), ("created_at", -1)]
+    )
     return database
 
 
@@ -470,11 +486,69 @@ def reset_question_selection():
     st.session_state["question_select"] = None
 
 
-tab_add, tab_view, tab_insights, tab_chat = st.tabs(
-    ["✏️ Add response", "📋 Responses", "📊 Class insights", "🧠 Misconception make-up"],
+tab_add, tab_questions, tab_view, tab_insights, tab_chat, tab_assistant, tab_library = st.tabs(
+    [
+        "📝 Record Response",
+        "📚 Question Bank",
+        "📋 Responses",
+        "📈 Class Insights",
+        "🧠 Misconception Insights",
+        "💬 Teaching Assistant",
+        "📂 Teaching Library",
+    ],
     key="main_navigation_tabs",
     on_change="rerun",
 )
+
+# ---------- Question bank ----------
+with tab_questions:
+    st.subheader("Question Bank")
+    st.caption(
+        "Create a complete question and answer, then assign it to a subject and topic."
+    )
+    bank_subject = st.selectbox(
+        "Subject",
+        list(SUBJECT_TOPICS),
+        key="question_bank_subject",
+    )
+    bank_topic = st.selectbox(
+        "Topic",
+        SUBJECT_TOPICS[bank_subject],
+        key=f"question_bank_topic_{bank_subject}",
+    )
+    with st.form("question_bank_form"):
+        bank_question = st.text_area("Question")
+        bank_answer = st.text_area("Correct answer")
+        save_question = st.form_submit_button("Save to question bank")
+
+    if save_question:
+        if not bank_question.strip() or not bank_answer.strip():
+            st.warning("Enter both the question and its correct answer.")
+        else:
+            try:
+                saved = db.questions.update_one(
+                    {
+                        "subject": bank_subject,
+                        "topic": bank_topic,
+                        "question": bank_question.strip(),
+                    },
+                    {
+                        "$setOnInsert": {
+                            "subject": bank_subject,
+                            "topic": bank_topic,
+                            "question": bank_question.strip(),
+                            "correct_answer": bank_answer.strip(),
+                            "created_at": datetime.now(timezone.utc),
+                        }
+                    },
+                    upsert=True,
+                )
+                if saved.upserted_id:
+                    st.success("Question added to the question bank.")
+                else:
+                    st.info("That question is already in the question bank.")
+            except Exception as e:
+                st.error(f"Could not save question: {e}")
 
 # ---------- Add response ----------
 with tab_add:
@@ -549,38 +623,6 @@ with tab_add:
     )
     selected_question = questions_by_text.get(question) if question else None
 
-    with st.expander("Add a question to this topic"):
-        with st.form("question_form"):
-            new_question = st.text_input("Question")
-            new_correct_answer = st.text_area("Correct answer")
-            add_question = st.form_submit_button("Save question")
-        if add_question:
-            if not new_question.strip() or not new_correct_answer.strip():
-                st.warning("Enter both the question and its correct answer.")
-            else:
-                try:
-                    db.questions.update_one(
-                        {
-                            "subject": subject,
-                            "topic": topic,
-                            "question": new_question.strip(),
-                        },
-                        {
-                            "$setOnInsert": {
-                                "subject": subject,
-                                "topic": topic,
-                                "question": new_question.strip(),
-                                "correct_answer": new_correct_answer.strip(),
-                                "created_at": datetime.now(timezone.utc),
-                            }
-                        },
-                        upsert=True,
-                    )
-                    st.success("Question saved. Select it above to record an answer.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Could not save question: {e}")
-
     with st.form("answer_form", clear_on_submit=True):
         student_answer = st.text_area("Student's answer")
         is_correct = st.checkbox("Student's answer is correct")
@@ -590,7 +632,7 @@ with tab_add:
             disabled=selected_question is None,
         )
     st.caption(
-        "Misconceptions are identified by Gemini in Misconception make-up; "
+        "Misconceptions are identified by Gemini in Misconception insights; "
         "you only mark whether the recorded answer is correct."
     )
 
@@ -720,7 +762,7 @@ with tab_view:
         elif selected_result == "Incorrect":
             filtered_df = filtered_df[filtered_df["is_correct"] == False]
 
-        st.subheader("Organised response view")
+        st.subheader("Organised Response View")
         if filtered_df.empty:
             st.info("No responses match the current selection. Try a different filter combination.")
         else:
@@ -756,7 +798,7 @@ with tab_view:
 # ---------- Class insights ----------
 with tab_insights:
     df = load_df()
-    st.subheader("Explore class results")
+    st.subheader("Explore Class Results")
     if df.empty or "is_correct" not in df.columns:
         st.info("Add some responses first.")
     else:
@@ -777,12 +819,12 @@ with tab_insights:
                 class_df = df[df["class_name"] == selected_class].copy()
                 mode = st.radio(
                     "Explore results",
-                    ["Class overview", "Individual student", "Question analysis"],
+                    ["Class Overview", "Student Insights", "Question Analysis"],
                     horizontal=True,
-                    key="insights_mode",
+                    key="insights_mode_v3",
                 )
 
-                if mode == "Individual student":
+                if mode == "Student Insights":
                     students = sorted(class_df["student_name"].dropna().unique())
                     if not students:
                         st.info("No students are recorded in this class yet.")
@@ -792,36 +834,251 @@ with tab_insights:
                             students,
                             key="insights_student_select",
                         )
-                        selected_df = class_df[
+                        student_df = class_df[
                             class_df["student_name"] == student_name
                         ].copy()
-                        first, second = st.columns(2)
-                        first.metric("Questions answered", len(selected_df))
-                        accuracy = (
-                            round(100 * selected_df["is_correct"].mean())
-                            if not selected_df.empty
-                            else 0
+                        chart_identity = hashlib.sha256(
+                            f"{selected_class}\0{student_name}".encode("utf-8")
+                        ).hexdigest()[:12]
+                        total_correct = int(student_df["is_correct"].sum())
+                        total_incorrect = int((~student_df["is_correct"]).sum())
+                        accuracy = round(100 * total_correct / len(student_df))
+
+                        st.markdown(f"#### {student_name} — Performance Overview")
+                        metrics = st.columns(4)
+                        metrics[0].metric("Questions Answered", len(student_df))
+                        metrics[1].metric("Correct", total_correct)
+                        metrics[2].metric("Incorrect", total_incorrect)
+                        metrics[3].metric("Overall Understanding", f"{accuracy}%")
+
+                        st.markdown("#### Correct and Incorrect Answers")
+                        overall_chart = pd.DataFrame(
+                            [
+                                {"Result": "Correct", "Answers": total_correct},
+                                {"Result": "Incorrect", "Answers": total_incorrect},
+                            ]
                         )
-                        second.metric("Accuracy", f"{accuracy}%")
-                        st.dataframe(
-                            selected_df[
-                                [
-                                    column
-                                    for column in [
-                                        "subject",
-                                        "topic",
-                                        "question",
-                                        "student_answer",
-                                        "correct_answer",
-                                        "is_correct",
-                                    ]
-                                    if column in selected_df.columns
-                                ]
-                            ],
-                            hide_index=True,
+                        st.vega_lite_chart(
+                            overall_chart,
+                            {
+                                "mark": {"type": "arc", "outerRadius": 110},
+                                "encoding": {
+                                    "theta": {
+                                        "field": "Answers",
+                                        "type": "quantitative",
+                                    },
+                                    "color": {
+                                        "field": "Result",
+                                        "type": "nominal",
+                                        "scale": {
+                                            "domain": ["Correct", "Incorrect"],
+                                            "range": ["#34d399", "#fb7185"],
+                                        },
+                                        "legend": {"title": None},
+                                    },
+                                    "tooltip": [
+                                        {"field": "Result", "type": "nominal"},
+                                        {
+                                            "field": "Answers",
+                                            "type": "quantitative",
+                                        },
+                                    ],
+                                },
+                            },
                             width="stretch",
+                            key=f"student_overall_chart_{chart_identity}",
                         )
-                elif mode == "Question analysis":
+
+                        st.markdown("#### Understanding by Topic")
+                        topic_summary = (
+                            student_df.dropna(subset=["subject", "topic"])
+                            .groupby(["subject", "topic"])["is_correct"]
+                            .agg(correct="sum", answered="count")
+                            .reset_index()
+                        )
+                        if topic_summary.empty:
+                            st.info("No subject and topic details are available.")
+                        else:
+                            topic_summary["incorrect"] = (
+                                topic_summary["answered"] - topic_summary["correct"]
+                            )
+                            topic_summary["understanding"] = (
+                                topic_summary["correct"]
+                                .div(topic_summary["answered"])
+                                .mul(100)
+                                .round()
+                                .astype(int)
+                            )
+                            topic_summary = topic_summary.sort_values(
+                                "understanding",
+                                ascending=True,
+                            )
+                            for start in range(0, len(topic_summary), 2):
+                                topic_columns = st.columns(2)
+                                for column, (_, topic_row) in zip(
+                                    topic_columns,
+                                    topic_summary.iloc[start : start + 2].iterrows(),
+                                ):
+                                    with column:
+                                        st.markdown(
+                                            f"**{topic_row['subject']} / "
+                                            f"{topic_row['topic']}**"
+                                        )
+                                        st.caption(
+                                            f"Understanding: "
+                                            f"{topic_row['understanding']}% "
+                                            f"({topic_row['correct']} correct, "
+                                            f"{topic_row['incorrect']} incorrect)"
+                                        )
+                                        topic_identity = hashlib.sha256(
+                                            (
+                                                str(topic_row["subject"])
+                                                + "|"
+                                                + str(topic_row["topic"])
+                                            ).encode("utf-8")
+                                        ).hexdigest()[:12]
+                                        topic_chart = pd.DataFrame(
+                                            [
+                                                {
+                                                    "Result": "Correct",
+                                                    "Answers": int(topic_row["correct"]),
+                                                },
+                                                {
+                                                    "Result": "Incorrect",
+                                                    "Answers": int(topic_row["incorrect"]),
+                                                },
+                                            ]
+                                        )
+                                        st.vega_lite_chart(
+                                            topic_chart,
+                                            {
+                                                "mark": {
+                                                    "type": "arc",
+                                                    "outerRadius": 90,
+                                                },
+                                                "encoding": {
+                                                    "theta": {
+                                                        "field": "Answers",
+                                                        "type": "quantitative",
+                                                    },
+                                                    "color": {
+                                                        "field": "Result",
+                                                        "type": "nominal",
+                                                        "scale": {
+                                                            "domain": [
+                                                                "Correct",
+                                                                "Incorrect",
+                                                            ],
+                                                            "range": [
+                                                                "#34d399",
+                                                                "#fb7185",
+                                                            ],
+                                                        },
+                                                        "legend": {"title": None},
+                                                    },
+                                                    "tooltip": [
+                                                        {
+                                                            "field": "Result",
+                                                            "type": "nominal",
+                                                        },
+                                                        {
+                                                            "field": "Answers",
+                                                            "type": "quantitative",
+                                                        },
+                                                    ],
+                                                },
+                                            },
+                                            width="stretch",
+                                            key=f"student_topic_chart_{chart_identity}_{topic_identity}",
+                                        )
+
+                        st.markdown("#### Answered Questions")
+                        filter_columns = st.columns(2)
+                        available_subjects = sorted(
+                            student_df["subject"].dropna().unique()
+                        )
+                        selected_subject_filter = filter_columns[0].selectbox(
+                            "Filter by subject",
+                            ["All subjects", *available_subjects],
+                            key="student_insights_subject_filter",
+                        )
+                        if selected_subject_filter == "All subjects":
+                            available_topics = sorted(
+                                student_df["topic"].dropna().unique()
+                            )
+                        else:
+                            available_topics = sorted(
+                                student_df.loc[
+                                    student_df["subject"] == selected_subject_filter,
+                                    "topic",
+                                ]
+                                .dropna()
+                                .unique()
+                            )
+                        selected_topic_filter = filter_columns[1].selectbox(
+                            "Filter by topic",
+                            ["All topics", *available_topics],
+                            key="student_insights_topic_filter",
+                        )
+                        wrong_only = st.toggle(
+                            "Show incorrect answers only",
+                            key="student_insights_wrong_only",
+                        )
+                        question_df = student_df.copy()
+                        if selected_subject_filter != "All subjects":
+                            question_df = question_df[
+                                question_df["subject"] == selected_subject_filter
+                            ]
+                        if selected_topic_filter != "All topics":
+                            question_df = question_df[
+                                question_df["topic"] == selected_topic_filter
+                            ]
+                        if wrong_only:
+                            question_df = question_df[~question_df["is_correct"]]
+
+                        if question_df.empty:
+                            st.info("No answered questions match these filters.")
+                        else:
+                            question_columns = [
+                                column
+                                for column in [
+                                    "created_at",
+                                    "subject",
+                                    "topic",
+                                    "question",
+                                    "student_answer",
+                                    "correct_answer",
+                                    "is_correct",
+                                ]
+                                if column in question_df.columns
+                            ]
+                            question_display = question_df[question_columns].copy()
+                            question_display["is_correct"] = question_display[
+                                "is_correct"
+                            ].map({True: "Correct", False: "Incorrect"})
+                            if "created_at" in question_display.columns:
+                                question_display = question_display.sort_values(
+                                    "created_at",
+                                    ascending=False,
+                                    kind="mergesort",
+                                )
+                            question_display = question_display.rename(
+                                columns={
+                                    "created_at": "Date",
+                                    "subject": "Subject",
+                                    "topic": "Topic",
+                                    "question": "Question",
+                                    "student_answer": "Student answer",
+                                    "correct_answer": "Correct answer",
+                                    "is_correct": "Result",
+                                }
+                            )
+                            st.dataframe(
+                                question_display,
+                                hide_index=True,
+                                width="stretch",
+                            )
+                elif mode == "Question Analysis":
                     subject = st.selectbox(
                         "Subject",
                         list(SUBJECT_TOPICS),
@@ -894,7 +1151,7 @@ with tab_insights:
                     topic_accuracy["subject_topic"] = (
                         topic_accuracy["subject"] + " / " + topic_accuracy["topic"]
                     )
-                    st.subheader("Accuracy by subject and topic")
+                    st.subheader("Accuracy by Subject and Topic")
                     st.bar_chart(topic_accuracy, x="subject_topic", y="accuracy")
 
                     st.subheader("Students")
@@ -916,9 +1173,9 @@ with tab_insights:
                         width="stretch",
                     )
 
-# ---------- Misconception make-up ----------
+# ---------- Misconception insights ----------
 with tab_chat:
-    st.subheader("Misconception make-up")
+    st.subheader("Misconception Insights")
     st.caption(
         "Choose an analysis scope first. Gemini runs only after you click "
         "**Analyze misconceptions**."
@@ -1168,7 +1425,7 @@ with tab_chat:
                         f"Analyzed {len(focus_responses)} of {total_incorrect} "
                         "incorrect answers in this scope."
                     )
-                st.markdown("#### AI overview")
+                st.markdown("#### AI Overview")
                 st.info(result["overview"])
                 first, second, third = st.columns(3)
                 first.metric("Incorrect answers", total_incorrect)
@@ -1179,7 +1436,7 @@ with tab_chat:
                 )
 
                 if result["patterns"]:
-                    st.markdown("#### Possible misconceptions")
+                    st.markdown("#### Possible Misconceptions")
                     for pattern in result["patterns"]:
                         with st.container(border=True):
                             st.markdown(
@@ -1214,7 +1471,7 @@ with tab_chat:
                     if index < len(evidence_responses)
                 ]
                 if uncertain:
-                    with st.expander("Incorrect answers that need more evidence"):
+                    with st.expander("Incorrect Answers That Need More Evidence"):
                         st.dataframe(
                             pd.DataFrame(
                                 [
@@ -1239,7 +1496,7 @@ with tab_chat:
                         if index < len(evidence_responses)
                         and index not in focus_indices
                     ]
-                    st.markdown("#### Similar errors across other topics or subjects")
+                    st.markdown("#### Similar Errors Across Other Topics or Subjects")
                     if related:
                         st.caption(
                             "Gemini found a possible connection from the answer evidence."
@@ -1272,7 +1529,7 @@ with tab_chat:
                     "Evidence-based patterns: "
                     f"{json.dumps(result['patterns'], ensure_ascii=True)}\n"
                     "Help the teacher explain these results and plan supportive, "
-                    "age-appropriate make-up practice. Be clear when answer evidence "
+                    "age-appropriate follow-up practice. Be clear when answer evidence "
                     "is insufficient; do not claim to know hidden reasoning."
                 )
                 conversations = st.session_state.setdefault(
@@ -1311,3 +1568,229 @@ with tab_chat:
                             ]
                         )
                         st.rerun()
+
+# ---------- Teaching library ----------
+with tab_library:
+    st.subheader("Teaching Library")
+    st.caption("Your saved AI-created teaching resources, ready whenever you need them.")
+    try:
+        teaching_resources = list(
+            db.teaching_resources.find(
+                {},
+                {
+                    "title": 1,
+                    "subject": 1,
+                    "topic": 1,
+                    "content": 1,
+                    "created_at": 1,
+                },
+            ).sort("created_at", -1)
+        )
+    except Exception as e:
+        st.error(f"Could not load your Teaching Library: {e}")
+        teaching_resources = []
+
+    if not teaching_resources:
+        st.info("No saved resources yet. Create and save teaching notes in the Teaching Assistant.")
+    else:
+        resource_subjects = sorted(
+            {
+                resource["subject"]
+                for resource in teaching_resources
+                if resource.get("subject")
+            }
+        )
+        subject_filter = st.selectbox(
+            "Filter by Subject",
+            ["All Subjects", *resource_subjects],
+            key="teaching_library_subject_filter",
+        )
+        matching_resources = teaching_resources
+        if subject_filter != "All Subjects":
+            matching_resources = [
+                resource
+                for resource in matching_resources
+                if resource.get("subject") == subject_filter
+            ]
+        resource_topics = sorted(
+            {
+                resource["topic"]
+                for resource in matching_resources
+                if resource.get("topic")
+            }
+        )
+        topic_filter = st.selectbox(
+            "Filter by Topic",
+            ["All Topics", *resource_topics],
+            key=f"teaching_library_topic_filter_{subject_filter}",
+        )
+        if topic_filter != "All Topics":
+            matching_resources = [
+                resource
+                for resource in matching_resources
+                if resource.get("topic") == topic_filter
+            ]
+
+        if not matching_resources:
+            st.info("No saved resources match these filters.")
+        else:
+            resources_by_id = {
+                str(resource["_id"]): resource for resource in matching_resources
+            }
+            selected_resource_id = st.selectbox(
+                "Choose a Saved Resource",
+                list(resources_by_id),
+                format_func=lambda resource_id: (
+                    f"{resources_by_id[resource_id].get('title', 'Untitled Resource')} · "
+                    f"{resources_by_id[resource_id].get('subject', 'Unassigned')} / "
+                    f"{resources_by_id[resource_id].get('topic', 'Unassigned')}"
+                ),
+                key=f"teaching_library_resource_{subject_filter}_{topic_filter}",
+            )
+            selected_resource = resources_by_id[selected_resource_id]
+            st.markdown(
+                f"### {selected_resource.get('title', 'Untitled Resource')}"
+            )
+            st.caption(
+                f"{selected_resource.get('subject', 'Unassigned')} / "
+                f"{selected_resource.get('topic', 'Unassigned')}"
+            )
+            st.markdown(selected_resource.get("content", "No content is available."))
+
+# ---------- Teaching assistant ----------
+with tab_assistant:
+    st.subheader("Teaching Assistant")
+    st.caption(
+        "Plan lessons, clarify concepts, create classroom materials, and adapt support "
+        "for your learners."
+    )
+    study_subject = st.selectbox(
+        "Subject",
+        ["Any Subject", *SUBJECT_TOPICS],
+        key="teaching_assistant_subject",
+    )
+    study_topic = None
+    if study_subject != "Any Subject":
+        study_topic = st.selectbox(
+            "Topic",
+            ["Any Topic", *SUBJECT_TOPICS[study_subject]],
+            key="teaching_assistant_topic",
+        )
+        if study_topic == "Any Topic":
+            study_topic = None
+
+    with st.expander("Create Teaching Notes"):
+        with st.form("teacher_notes_form"):
+            notes_focus = st.text_input(
+                "What should the notes focus on?",
+                placeholder="For example: key vocabulary and common misconceptions",
+            )
+            create_notes = st.form_submit_button(
+                "Generate Teaching Notes",
+                disabled=(
+                    study_subject == "Any Subject"
+                    or study_topic is None
+                    or not bool(os.getenv("GEMINI_API_KEY"))
+                ),
+            )
+        if create_notes:
+            try:
+                with st.spinner("Creating classroom-ready teaching notes..."):
+                    notes_content = generate_teaching_notes(
+                        study_subject,
+                        study_topic,
+                        notes_focus,
+                    )
+                notes_key = hashlib.sha256(
+                    f"{study_subject}\0{study_topic}\0{notes_content}".encode("utf-8")
+                ).hexdigest()[:12]
+                st.session_state["generated_teacher_notes"] = {
+                    "key": notes_key,
+                    "title": f"{study_topic} — {study_subject} Teaching Notes",
+                    "subject": study_subject,
+                    "topic": study_topic,
+                    "content": notes_content,
+                    "saved": False,
+                }
+            except Exception as e:
+                st.error(f"Gemini could not create teaching notes: {e}")
+
+    if not os.getenv("GEMINI_API_KEY"):
+        st.warning("Add GEMINI_API_KEY to .env to use the Teaching Assistant.")
+    generated_notes = st.session_state.get("generated_teacher_notes")
+    if generated_notes:
+        st.markdown("#### Generated Teaching Notes")
+        st.markdown(generated_notes["content"])
+        resource_title = st.text_input(
+            "Title for your Teaching Library",
+            value=generated_notes["title"],
+            key=f"teacher_notes_title_{generated_notes['key']}",
+            disabled=generated_notes["saved"],
+        )
+        if generated_notes["saved"]:
+            st.success("These notes are saved in your Teaching Library.")
+        elif st.button(
+            "Save Notes to Teaching Library",
+            key=f"save_teacher_notes_{generated_notes['key']}",
+        ):
+            if (
+                not resource_title.strip()
+                or not generated_notes.get("subject")
+                or not generated_notes.get("topic")
+                or not generated_notes.get("content")
+            ):
+                st.warning(
+                    "A title, subject, topic, and note content are required to save."
+                )
+            else:
+                try:
+                    db.teaching_resources.insert_one(
+                        {
+                            "title": resource_title.strip(),
+                            "subject": generated_notes["subject"],
+                            "topic": generated_notes["topic"],
+                            "content": generated_notes["content"],
+                            "created_at": datetime.now(timezone.utc),
+                        }
+                    )
+                    generated_notes["saved"] = True
+                    st.success("Teaching notes saved to your Teaching Library.")
+                except Exception as e:
+                    st.error(f"Could not save teaching notes: {e}")
+
+    st.markdown("#### Ask the Teaching Assistant")
+    study_conversation = st.session_state.setdefault(
+        "teaching_assistant_conversation",
+        [],
+    )
+    if st.button("Clear Conversation", key="clear_teaching_assistant_chat"):
+        st.session_state["teaching_assistant_conversation"] = []
+        st.rerun()
+    for turn in study_conversation:
+        with st.chat_message(turn["role"]):
+            st.markdown(turn["content"])
+    study_prompt = st.chat_input(
+        "Ask about teaching, lessons, or learning resources",
+        key="teaching_assistant_chat",
+        disabled=not bool(os.getenv("GEMINI_API_KEY")),
+    )
+    if study_prompt and study_prompt.strip():
+        study_prompt = study_prompt.strip()
+        try:
+            with st.spinner("Preparing a teaching-focused response..."):
+                study_reply = chat_about_education(
+                    study_conversation,
+                    study_prompt,
+                    None if study_subject == "Any Subject" else study_subject,
+                    study_topic,
+                )
+        except Exception as e:
+            st.error(f"The Teaching Assistant could not reply: {e}")
+        else:
+            study_conversation.extend(
+                [
+                    {"role": "user", "content": study_prompt},
+                    {"role": "assistant", "content": study_reply},
+                ]
+            )
+            st.rerun()
