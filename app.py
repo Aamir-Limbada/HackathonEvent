@@ -1864,31 +1864,22 @@ with tab_assistant:
 with tab_agent:
     st.subheader("Class Response Agent")
     st.caption(
-        "Turn responses already saved in AIM Assist into reviewed, verified revision "
-        "packs. No CSV upload is needed."
+        "Find where your class is getting stuck and prepare focused revision "
+        "resources from the answers you have already recorded."
     )
     with st.container(border=True):
-        st.markdown("**What it does**")
+        st.markdown("**How this helps you**")
         st.markdown(
-            "1. Select saved student responses that have not been processed by this "
-            "agent.\n"
-            "2. Gemini assesses each answer and updates its saved correctness mark. "
-            "Uncertain or borderline marks are held for your review.\n"
-            "3. Incorrect answers are grouped by misconception. Atlas Vector Search "
-            "can combine groups with similar meanings.\n"
-            "4. Gemini drafts a revision pack and checks its practice answers.\n"
-            "5. You review the marks and approve the pack before it is saved to the "
-            "Teaching Library."
+            "Choose a class and subject to review its recorded answers. The assistant "
+            "checks the marks, flags uncertain answers for your decision, and looks "
+            "for misconceptions shared by students. It then drafts a short revision "
+            "resource with practice questions for you to check. Nothing is added to "
+            "the Teaching Library until you approve it."
         )
         st.caption(
-            "The agent does not create student responses. It reads and updates the "
-            "responses already in your database."
+            "Start by choosing a class, subject, and topic below. Only answers not "
+            "previously reviewed by this assistant will be included."
         )
-
-    st.caption(
-        "AI model: "
-        f"`{os.getenv('GEMINI_MODEL', 'gemini-4-argon')}`"
-    )
 
     saved_classes = sorted(db.responses.distinct("class_name"))
     saved_subjects = sorted(db.responses.distinct("subject"))
@@ -2224,24 +2215,6 @@ with tab_agent:
             packs = selected_run.get("packs", [])
             if packs:
                 st.markdown("#### Draft revision packs")
-                misconception_counts = pd.DataFrame(
-                    [
-                        {
-                            "Misconception": (
-                                f"{pack.get('canonical_label', pack['title'])} / "
-                                f"{pack.get('subject', '')} / "
-                                f"{pack.get('topic', '')}"
-                            ),
-                            "Responses": pack.get("evidence_count", 0),
-                        }
-                        for pack in packs
-                    ]
-                )
-                st.bar_chart(
-                    misconception_counts,
-                    x="Misconception",
-                    y="Responses",
-                )
                 for pack in packs:
                     with st.container(border=True):
                         st.markdown(f"**{pack.get('canonical_label', pack['title'])}**")
@@ -2290,6 +2263,34 @@ with tab_agent:
                             )
                         else:
                             st.error("No revision pack was generated for this group.")
+
+            ungrouped_responses = selected_run.get("ungrouped_responses", [])
+            if ungrouped_responses:
+                st.markdown("#### Answers needing another look")
+                st.info(
+                    f"{len(ungrouped_responses)} incorrect answer(s) were not used "
+                    "to create a revision pack because the assistant could not "
+                    "confidently place them in a misconception group. These answers "
+                    "are not included in the packs below."
+                )
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {
+                                "Evidence #": item["index"] + 1,
+                                "Subject": item.get("subject", ""),
+                                "Topic": item.get("topic", ""),
+                                "Question": item.get("question", ""),
+                                "Student answer": item.get("student_answer", ""),
+                                "Correct answer": item.get("correct_answer", ""),
+                                "Why it needs a look": item.get("reason", ""),
+                            }
+                            for item in ungrouped_responses
+                        ]
+                    ),
+                    hide_index=True,
+                    width="stretch",
+                )
 
             vector_errors = selected_run.get("vector_errors", [])
             if vector_errors:
@@ -2434,6 +2435,7 @@ with tab_agent:
                 "Revision packs checked",
                 f"{verified_pack_count} / {len(packs)} passed",
             )
+            ungrouped_responses = selected_run.get("ungrouped_responses", [])
 
             if failed_rows:
                 st.write(
@@ -2468,6 +2470,12 @@ with tab_agent:
                 st.write(
                     "**Misconceptions:** no incorrect answers in this run were "
                     "grouped into a revision pack."
+                )
+            if ungrouped_responses:
+                st.write(
+                    f"**Answers needing another look:** "
+                    f"{len(ungrouped_responses)} incorrect answer(s) were not "
+                    "included in the revision packs and are listed above."
                 )
 
             if remaining_reviews:

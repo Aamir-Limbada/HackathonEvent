@@ -207,6 +207,7 @@ def _group_and_draft_packs(db, run_id):
     )
     packs = []
     vector_errors = []
+    ungrouped_responses = []
     if incorrect_responses:
         examples = [
             {
@@ -248,72 +249,114 @@ def _group_and_draft_packs(db, run_id):
             )
             return False
 
+        uncertain_indices = set(grouped["uncertain_indices"])
+        assigned_indices = set()
         semantic_groups = {}
         for pattern_index, pattern in enumerate(grouped["patterns"]):
-            evidence = [
+            pattern_evidence = [
                 examples[index]
                 for index in pattern["evidence_indices"]
-                if index < len(examples)
+                if index < len(examples) and index not in uncertain_indices
             ]
-            if not evidence:
-                continue
-            topic = evidence[0]["topic"]
-            subject = evidence[0]["subject"]
-            try:
-                canonical_label, vector_score = _atlas_canonical_label(
-                    db,
-                    pattern["label"],
-                    pattern["explanation"],
+            evidence_by_scope = {}
+            for item in pattern_evidence:
+                scope_key = (
+                    item["subject"].strip().casefold(),
+                    item["topic"].strip().casefold(),
                 )
-                log_agent_action(
-                    db,
-                    run_id,
-                    "atlas_vector_group",
-                    "succeeded",
+                evidence_by_scope.setdefault(scope_key, []).append(item)
+
+            for evidence in evidence_by_scope.values():
+                assigned_indices.update(item["index"] for item in evidence)
+                subject = evidence[0]["subject"]
+                topic = evidence[0]["topic"]
+                try:
+                    canonical_label, vector_score = _atlas_canonical_label(
+                        db,
+                        pattern["label"],
+                        pattern["explanation"],
+                    )
+                    log_agent_action(
+                        db,
+                        run_id,
+                        "atlas_vector_group",
+                        "succeeded",
+                        {
+                            "pattern": pattern_index,
+                            "subject": subject,
+                            "topic": topic,
+                            "canonical_label": canonical_label,
+                            "similarity": vector_score,
+                        },
+                    )
+                except Exception as error:
+                    canonical_label = pattern["label"]
+                    vector_score = None
+                    vector_errors.append(str(error))
+                    log_agent_action(
+                        db,
+                        run_id,
+                        "atlas_vector_group",
+                        "failed",
+                        {
+                            "pattern": pattern_index,
+                            "subject": subject,
+                            "topic": topic,
+                            "error": str(error),
+                        },
+                    )
+
+                group_key = (
+                    subject.casefold(),
+                    topic.casefold(),
+                    canonical_label.casefold(),
+                )
+                group = semantic_groups.setdefault(
+                    group_key,
                     {
-                        "pattern": pattern_index,
+                        "pattern_indices": [],
+                        "subject": subject,
+                        "topic": topic,
                         "canonical_label": canonical_label,
-                        "similarity": vector_score,
+                        "source_labels": [],
+                        "evidence": [],
+                        "vector_similarity": vector_score,
                     },
                 )
-            except Exception as error:
-                canonical_label = pattern["label"]
-                vector_score = None
-                vector_errors.append(str(error))
-                log_agent_action(
-                    db,
-                    run_id,
-                    "atlas_vector_group",
-                    "failed",
-                    {"pattern": pattern_index, "error": str(error)},
-                )
+                if pattern_index not in group["pattern_indices"]:
+                    group["pattern_indices"].append(pattern_index)
+                if pattern["label"] not in group["source_labels"]:
+                    group["source_labels"].append(pattern["label"])
+                group["evidence"].extend(evidence)
+                if vector_score is not None:
+                    group["vector_similarity"] = max(
+                        group["vector_similarity"] or 0,
+                        vector_score,
+                    )
 
-            group_key = (
-                subject.casefold(),
-                topic.casefold(),
-                canonical_label.casefold(),
+        ungrouped_indices = (
+            uncertain_indices
+            | (set(range(len(examples))) - assigned_indices)
+        )
+        ungrouped_responses = [
+            {
+                **examples[index],
+                "reason": (
+                    "Gemini marked this answer as needing more evidence."
+                    if index in uncertain_indices
+                    else "Gemini did not include this answer in a misconception group."
+                ),
+            }
+            for index in sorted(ungrouped_indices)
+        ]
+        if ungrouped_responses:
+            log_agent_action(
+                db,
+                run_id,
+                "report_ungrouped_answers",
+                "needs_teacher_attention",
+                {"answers": len(ungrouped_responses)},
             )
-            group = semantic_groups.setdefault(
-                group_key,
-                {
-                    "pattern_index": pattern_index,
-                    "pattern_indices": [],
-                    "subject": subject,
-                    "topic": topic,
-                    "canonical_label": canonical_label,
-                    "source_labels": [],
-                    "evidence": [],
-                    "vector_similarity": vector_score,
-                },
-            )
-            group["pattern_indices"].append(pattern_index)
-            group["source_labels"].append(pattern["label"])
-            group["evidence"].extend(evidence)
-            if vector_score is not None:
-                group["vector_similarity"] = max(
-                    group["vector_similarity"] or 0,
-                    vector_score,
-                )
 
         for group in semantic_groups.values():
             topic = group["topic"]
@@ -324,6 +367,7 @@ def _group_and_draft_packs(db, run_id):
                     for item in group["evidence"]
                 }.values()
             )
+            pack_index = len(packs)
             try:
                 verified_pack = generate_verified_materials(
                     topic,
@@ -331,7 +375,7 @@ def _group_and_draft_packs(db, run_id):
                     group["evidence"],
                 )
                 pack = {
-                    "pattern_index": group["pattern_index"],
+                    "pattern_index": pack_index,
                     "pattern_indices": group["pattern_indices"],
                     "title": f"{canonical_label} — {topic} Revision Pack",
                     "subject": group["subject"],
@@ -368,7 +412,7 @@ def _group_and_draft_packs(db, run_id):
                 )
                 packs.append(
                     {
-                        "pattern_index": group["pattern_index"],
+                        "pattern_index": pack_index,
                         "pattern_indices": group["pattern_indices"],
                         "title": f"{canonical_label} — {topic} Revision Pack",
                         "subject": group["subject"],
@@ -393,6 +437,7 @@ def _group_and_draft_packs(db, run_id):
                 "status": run_status,
                 "packs": packs,
                 "vector_errors": vector_errors,
+                "ungrouped_responses": ungrouped_responses,
                 "updated_at": _now(),
             },
             "$unset": {"last_error": ""},
@@ -418,6 +463,7 @@ def run_agent_saved_responses(db, responses):
             "failed_count": 0,
             "failed_rows": [],
             "packs": [],
+            "ungrouped_responses": [],
             "actions": [],
             "created_at": _now(),
             "updated_at": _now(),
