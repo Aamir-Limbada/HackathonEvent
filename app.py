@@ -12,15 +12,99 @@ from analysis import analyze_misconceptions, chat_about_misconceptions
 
 load_dotenv()
 
-st.set_page_config(page_title="TeachAssist AI", page_icon="📚", layout="wide")
+st.set_page_config(page_title="AIM Assist", page_icon="🎯", layout="wide")
 st.markdown(
-    "<style>img[alt='Running...'] { display: none !important; }</style>",
+    """
+    <style>
+        img[alt='Running...'] { display: none !important; }
+
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+        html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] {
+            background: linear-gradient(135deg, #07111f 0%, #0d1b2a 35%, #16263f 100%);
+            color: #edf4ff;
+            font-family: 'Inter', sans-serif;
+        }
+
+        .block-container {
+            padding-top: 2rem;
+            padding-bottom: 3rem;
+            max-width: 1500px;
+        }
+
+        [data-testid="stHeader"] {
+            background: rgba(8, 15, 27, 0.6);
+            backdrop-filter: blur(8px);
+        }
+
+        .stTabs [role="tablist"] {
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .stTabs [role="tab"] {
+            background: rgba(148, 163, 184, 0.08);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            border-radius: 12px 12px 0 0;
+            color: #dfe9ff;
+            padding: 0.7rem 1.1rem;
+            font-weight: 600;
+        }
+
+        .stTabs [role="tab"][aria-selected="true"] {
+            background: linear-gradient(135deg, #5b7cff 0%, #9f56ff 100%);
+            border-color: rgba(147, 197, 253, 0.7);
+            box-shadow: 0 10px 24px rgba(91, 124, 255, 0.35);
+        }
+
+        div[data-testid="stVerticalBlock"] > div > div {
+            border-radius: 16px;
+        }
+
+        .stButton > button {
+            background: linear-gradient(135deg, #4f8cff 0%, #7a4dff 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-weight: 700;
+            padding: 0.65rem 1.2rem;
+            box-shadow: 0 10px 24px rgba(85, 115, 255, 0.35);
+        }
+
+        .stButton > button:hover {
+            opacity: 0.96;
+            transform: translateY(-1px);
+        }
+
+        .stDataFrame {
+            border-radius: 14px;
+            overflow: hidden;
+            border: 1px solid rgba(148, 163, 184, 0.2);
+        }
+
+        .stMetric {
+            background: rgba(15, 23, 42, 0.7);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            border-radius: 14px;
+            padding: 0.8rem 1rem;
+        }
+
+        section[data-testid="stSidebar"] {
+            background: rgba(11, 18, 30, 0.76);
+            border-right: 1px solid rgba(148, 163, 184, 0.14);
+        }
+
+        .stSelectbox, .stTextInput, .stTextArea {
+            border-radius: 10px;
+        }
+    </style>
+    """,
     unsafe_allow_html=True,
 )
-st.title("📚 TeachAssist AI")
+st.title("🎯 AIM Assist")
 st.caption(
-    "Record student answers and correctness. Gemini identifies possible "
-    "misconceptions in the make-up view."
+    "AI-powered support for recording answers, tracking class performance, and "
+    "spotting likely misconceptions."
 )
 
 SUBJECT_TOPICS = {
@@ -275,9 +359,105 @@ with tab_view:
     if df.empty:
         st.info("No responses yet. Add one in the first tab.")
     else:
-        wanted = ["created_at", "class_name", "student_name", "subject", "topic",
-                  "question", "student_answer", "is_correct"]
-        st.dataframe(df[[c for c in wanted if c in df.columns]], hide_index=True)
+        df = df.copy()
+        if "created_at" in df.columns:
+            df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce")
+        if "is_correct" in df.columns:
+            df["is_correct"] = df["is_correct"].astype(bool)
+
+        class_options = ["All classes"] + sorted(df["class_name"].dropna().unique())
+        selected_class = st.selectbox("Class", class_options, index=0)
+
+        student_options = ["All students"]
+        if selected_class != "All classes":
+            student_options += sorted(
+                df.loc[df["class_name"] == selected_class, "student_name"].dropna().unique()
+            )
+        selected_student = st.selectbox("Student", student_options, index=0)
+
+        subject_options = ["All subjects"] + sorted(df["subject"].dropna().unique())
+        selected_subject = st.selectbox("Subject", subject_options, index=0)
+
+        topic_options = ["All topics"]
+        if selected_subject != "All subjects":
+            topic_options += sorted(
+                df.loc[df["subject"] == selected_subject, "topic"].dropna().unique()
+            )
+        selected_topic = st.selectbox("Topic", topic_options, index=0)
+
+        question_options = ["All questions"]
+        filtered_question_df = df
+        if selected_class != "All classes":
+            filtered_question_df = filtered_question_df[
+                filtered_question_df["class_name"] == selected_class
+            ]
+        if selected_student != "All students":
+            filtered_question_df = filtered_question_df[
+                filtered_question_df["student_name"] == selected_student
+            ]
+        if selected_subject != "All subjects":
+            filtered_question_df = filtered_question_df[
+                filtered_question_df["subject"] == selected_subject
+            ]
+        if selected_topic != "All topics":
+            filtered_question_df = filtered_question_df[
+                filtered_question_df["topic"] == selected_topic
+            ]
+        if not filtered_question_df.empty:
+            question_options += sorted(filtered_question_df["question"].dropna().unique())
+        selected_question = st.selectbox("Question", question_options, index=0)
+
+        result_options = ["All results", "Correct", "Incorrect"]
+        selected_result = st.selectbox("Result", result_options, index=0)
+
+        filtered_df = df.copy()
+        if selected_class != "All classes":
+            filtered_df = filtered_df[filtered_df["class_name"] == selected_class]
+        if selected_student != "All students":
+            filtered_df = filtered_df[filtered_df["student_name"] == selected_student]
+        if selected_subject != "All subjects":
+            filtered_df = filtered_df[filtered_df["subject"] == selected_subject]
+        if selected_topic != "All topics":
+            filtered_df = filtered_df[filtered_df["topic"] == selected_topic]
+        if selected_question != "All questions":
+            filtered_df = filtered_df[filtered_df["question"] == selected_question]
+        if selected_result == "Correct":
+            filtered_df = filtered_df[filtered_df["is_correct"] == True]
+        elif selected_result == "Incorrect":
+            filtered_df = filtered_df[filtered_df["is_correct"] == False]
+
+        st.subheader("Organised response view")
+        if filtered_df.empty:
+            st.info("No responses match the current selection. Try a different filter combination.")
+        else:
+            summary_cols = st.columns(4)
+            summary_cols[0].metric("Responses", len(filtered_df))
+            if "is_correct" in filtered_df.columns:
+                summary_cols[1].metric("Correct", int(filtered_df["is_correct"].sum()))
+                summary_cols[2].metric("Incorrect", int((~filtered_df["is_correct"]).sum()))
+                accuracy = round(100 * filtered_df["is_correct"].mean()) if not filtered_df.empty else 0
+                summary_cols[3].metric("Accuracy", f"{accuracy}%")
+
+            wanted = [
+                "created_at",
+                "class_name",
+                "student_name",
+                "subject",
+                "topic",
+                "question",
+                "student_answer",
+                "correct_answer",
+                "is_correct",
+            ]
+            display_df = filtered_df[[c for c in wanted if c in filtered_df.columns]].sort_values(
+                by="created_at",
+                ascending=False,
+                kind="mergesort",
+            )
+            display_df = display_df.copy()
+            if "created_at" in display_df.columns:
+                display_df["created_at"] = display_df["created_at"].dt.strftime("%d %b %Y %H:%M")
+            st.dataframe(display_df, hide_index=True, width="stretch")
 
 # ---------- Class insights ----------
 with tab_insights:
