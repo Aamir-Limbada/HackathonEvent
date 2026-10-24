@@ -6,7 +6,7 @@ import streamlit as st
 from dotenv import load_dotenv
 from pymongo import MongoClient
 
-from analysis import chat_with_student
+from analysis import chat_about_misconceptions
 
 load_dotenv()
 
@@ -84,7 +84,7 @@ def reset_question_selection():
 
 
 tab_add, tab_view, tab_insights, tab_chat = st.tabs(
-    ["✏️ Add response", "📋 Responses", "📊 Class insights", "💬 Error-correction chat"]
+    ["✏️ Add response", "📋 Responses", "📊 Class insights", "🧠 Misconception make-up"]
 )
 
 # ---------- Add response ----------
@@ -336,7 +336,7 @@ with tab_insights:
                                 ]
                             ],
                             hide_index=True,
-                            use_container_width=True,
+                            width="stretch",
                         )
                 elif mode == "Question analysis":
                     subject = st.selectbox(
@@ -391,7 +391,7 @@ with tab_insights:
                                 ]
                             ].sort_values("student_name"),
                             hide_index=True,
-                            use_container_width=True,
+                            width="stretch",
                         )
                 else:
                     first, second, third = st.columns(3)
@@ -431,103 +431,397 @@ with tab_insights:
                     st.dataframe(
                         student_summary.sort_values("student_name"),
                         hide_index=True,
-                        use_container_width=True,
+                        width="stretch",
                     )
 
-# ---------- Error-correction chat ----------
+# ---------- Misconception make-up ----------
 with tab_chat:
-    st.subheader("Learn from a student's mistake")
-    st.write(
-        "Choose a saved incorrect response to open a focused tutoring chat. "
-        "The student's name and class are not sent to Gemini."
+    st.subheader("Misconception make-up")
+    st.caption(
+        "Review a student's answers by subject, topic, or question, then use Gemini "
+        "to plan a focused explanation and practice."
     )
 
-    incorrect_responses = list(
-        db.responses.find({"is_correct": False}).sort("created_at", -1).limit(100)
-    )
-
-    if not incorrect_responses:
-        st.info("There are no saved incorrect responses to discuss yet.")
-    elif not os.getenv("GEMINI_API_KEY"):
-        st.error("GEMINI_API_KEY is missing. Add it to your .env file to use the tutor.")
+    class_options = sorted(db.classes.distinct("class_name"))
+    if not class_options:
+        st.info("Add a class and student responses to get started.")
     else:
-        responses_by_id = {str(response["_id"]): response for response in incorrect_responses}
-        response_ids = list(responses_by_id)
-
-        def response_label(response_id):
-            response = responses_by_id[response_id]
-            question = response.get("question", "").replace("\n", " ")
-            if len(question) > 70:
-                question = f"{question[:67]}..."
-            return (
-                f"{response.get('student_name', 'Student')} | "
-                f"{response.get('subject', 'No subject')} / "
-                f"{response.get('topic', 'No topic')} | {question}"
+        selected_class = st.selectbox(
+            "Class",
+            class_options,
+            key="makeup_class",
+        )
+        student_options = sorted(
+            db.students.distinct("student_name", {"class_name": selected_class})
+        )
+        if not student_options:
+            st.info("There are no students recorded in this class yet.")
+        else:
+            selected_student = st.selectbox(
+                "Student",
+                student_options,
+                key="makeup_student",
             )
-
-        selected_id = st.selectbox(
-            "Choose an incorrect response",
-            response_ids,
-            format_func=response_label,
-        )
-        selected_response = responses_by_id[selected_id]
-
-        st.markdown(
-            f"**Subject and topic:** {selected_response.get('subject', '')} / "
-            f"{selected_response.get('topic', '')}"
-        )
-        st.markdown(f"**Question:** {selected_response.get('question', '')}")
-        st.markdown(f"**Student's answer:** {selected_response.get('student_answer', '')}")
-        st.markdown(f"**Correct answer:** {selected_response.get('correct_answer', '')}")
-        diagnosis = selected_response.get("analysis") or {}
-        if diagnosis.get("misconception"):
-            st.warning(
-                f"**Demonstration diagnosis:** {diagnosis['misconception']}"
+            student_filter = {
+                "class_name": selected_class,
+                "student_name": selected_student,
+            }
+            available_subjects = sorted(
+                db.responses.distinct("subject", student_filter)
             )
-            st.write(diagnosis.get("misconception_detail", ""))
-            if diagnosis.get("knowledge_gap"):
-                st.write(f"**Knowledge gap:** {diagnosis['knowledge_gap']}")
-            if diagnosis.get("suggested_intervention"):
-                st.write(
-                    f"**Suggested intervention:** "
-                    f"{diagnosis['suggested_intervention']}"
-                )
-
-        conversations = st.session_state.setdefault("tutor_conversations", {})
-        history = conversations.setdefault(selected_id, [])
-
-        if st.button("Clear this chat", key=f"clear_tutor_{selected_id}"):
-            conversations[selected_id] = []
-            st.rerun()
-
-        for turn in history:
-            with st.chat_message(turn["role"]):
-                st.markdown(turn["content"])
-
-        prompt = st.chat_input(
-            "Ask for a hint, explanation, or another example",
-            key=f"tutor_input_{selected_id}",
-        )
-        if prompt and prompt.strip():
-            prompt = prompt.strip()
-            try:
-                with st.spinner("Thinking..."):
-                    reply = chat_with_student(
-                        (
-                            f"{selected_response.get('subject', '')} / "
-                            f"{selected_response.get('topic', '')}"
-                        ),
-                        selected_response.get("question", ""),
-                        selected_response.get("correct_answer", ""),
-                        selected_response.get("student_answer", ""),
-                        history,
-                        prompt,
-                    )
-            except Exception as e:
-                st.error(f"Gemini could not reply: {e}")
+            if not available_subjects:
+                st.info("There are no saved responses for this student yet.")
             else:
-                history.extend([
-                    {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": reply},
-                ])
-                st.rerun()
+                selected_subject = st.selectbox(
+                    "Subject",
+                    available_subjects,
+                    key="makeup_subject",
+                )
+                subject_responses = list(
+                    db.responses.find(
+                        {**student_filter, "subject": selected_subject},
+                        {"_id": 0, "class_name": 0, "student_name": 0},
+                    ).sort("topic", 1)
+                )
+                level = st.radio(
+                    "Explore misconceptions",
+                    ["Subject overview", "Topic", "Question"],
+                    horizontal=True,
+                    key="makeup_level",
+                )
+                scoped_responses = subject_responses
+                selected_topic = None
+                selected_question = None
+
+                if level in ("Topic", "Question"):
+                    topic_options = sorted(
+                        {response.get("topic", "") for response in subject_responses}
+                        - {""}
+                    )
+                    if topic_options:
+                        selected_topic = st.selectbox(
+                            "Topic",
+                            topic_options,
+                            key="makeup_topic",
+                        )
+                        scoped_responses = [
+                            response
+                            for response in subject_responses
+                            if response.get("topic") == selected_topic
+                        ]
+
+                if level == "Question":
+                    incorrect_questions = sorted(
+                        {
+                            response.get("question", "")
+                            for response in scoped_responses
+                            if not response.get("is_correct", False)
+                            and response.get("question")
+                        }
+                    )
+                    question_options = incorrect_questions or sorted(
+                        {
+                            response.get("question", "")
+                            for response in scoped_responses
+                            if response.get("question")
+                        }
+                    )
+                    if question_options:
+                        selected_question = st.selectbox(
+                            "Question",
+                            question_options,
+                            key="makeup_question",
+                        )
+                        scoped_responses = [
+                            response
+                            for response in scoped_responses
+                            if response.get("question") == selected_question
+                        ]
+
+                scoped_incorrect = [
+                    response
+                    for response in scoped_responses
+                    if not response.get("is_correct", False)
+                ]
+                diagnosis_rows = []
+                for response in scoped_incorrect:
+                    diagnosis = response.get("analysis")
+                    if isinstance(diagnosis, dict) and diagnosis.get("misconception"):
+                        diagnosis_rows.append(
+                            {
+                                "misconception": diagnosis["misconception"],
+                                "topic": response.get("topic", ""),
+                                "question": response.get("question", ""),
+                                "student_answer": response.get("student_answer", ""),
+                                "correct_answer": response.get("correct_answer", ""),
+                                "knowledge_gap": diagnosis.get("knowledge_gap") or "",
+                                "misconception_detail": diagnosis.get(
+                                    "misconception_detail"
+                                )
+                                or "",
+                            }
+                        )
+
+                if not scoped_incorrect:
+                    st.success("No incorrect answers are recorded in this selection.")
+                else:
+                    first, second = st.columns(2)
+                    first.metric("Answers to review", len(scoped_incorrect))
+                    second.metric(
+                        "Misconceptions identified",
+                        len({row["misconception"] for row in diagnosis_rows}),
+                    )
+                    if diagnosis_rows:
+                        summary = (
+                            pd.DataFrame(diagnosis_rows)
+                            .groupby("misconception", as_index=False)
+                            .agg(
+                                occurrences=("question", "count"),
+                                knowledge_gap=("knowledge_gap", "first"),
+                            )
+                            .sort_values(
+                                ["occurrences", "misconception"],
+                                ascending=[False, True],
+                            )
+                        )
+                        st.markdown("#### Misconceptions to work on")
+                        st.dataframe(
+                            summary,
+                            hide_index=True,
+                            width="stretch",
+                        )
+                        with st.expander("Review the student's answers"):
+                            st.dataframe(
+                                pd.DataFrame(diagnosis_rows)[
+                                    [
+                                        "topic",
+                                        "question",
+                                        "student_answer",
+                                        "correct_answer",
+                                        "misconception",
+                                        "misconception_detail",
+                                        "knowledge_gap",
+                                    ]
+                                ],
+                                hide_index=True,
+                                width="stretch",
+                            )
+                    else:
+                        st.info(
+                            "These answers are marked incorrect, but do not have "
+                            "a saved misconception diagnosis yet."
+                        )
+
+                related_responses = []
+                comparison_responses = []
+                if level == "Question" and selected_question and scoped_incorrect:
+                    selected_response = next(
+                        (
+                            response
+                            for response in scoped_responses
+                            if not response.get("is_correct", False)
+                        ),
+                        scoped_responses[0] if scoped_responses else None,
+                    )
+                    if selected_response:
+                        selected_diagnosis = selected_response.get("analysis") or {}
+                        label = (
+                            selected_diagnosis.get("misconception")
+                            if isinstance(selected_diagnosis, dict)
+                            else None
+                        )
+                        if label:
+                            related_responses = list(
+                                db.responses.find(
+                                    {
+                                        **student_filter,
+                                        "is_correct": False,
+                                        "analysis.misconception": label,
+                                        "$or": [
+                                            {"subject": {"$ne": selected_subject}},
+                                            {"topic": {"$ne": selected_topic}},
+                                        ],
+                                    },
+                                    {
+                                        "_id": 0,
+                                        "subject": 1,
+                                        "topic": 1,
+                                        "question": 1,
+                                        "student_answer": 1,
+                                        "analysis.misconception": 1,
+                                    },
+                                ).limit(50)
+                            )
+                        comparison_responses = [
+                            response
+                            for response in db.responses.find(
+                                {
+                                    **student_filter,
+                                    "is_correct": False,
+                                },
+                                {
+                                    "_id": 0,
+                                    "subject": 1,
+                                    "topic": 1,
+                                    "question": 1,
+                                    "student_answer": 1,
+                                    "correct_answer": 1,
+                                    "analysis": 1,
+                                },
+                            )
+                            if not (
+                                response.get("subject") == selected_subject
+                                and response.get("topic") == selected_topic
+                                and response.get("question") == selected_question
+                            )
+                        ][:20]
+                        st.markdown("#### Similar errors across other topics or subjects")
+                        if related_responses:
+                            st.caption(
+                                "These answers share the same saved misconception label."
+                            )
+                            st.dataframe(
+                                pd.DataFrame(
+                                    [
+                                        {
+                                            "subject": item.get("subject", ""),
+                                            "topic": item.get("topic", ""),
+                                            "question": item.get("question", ""),
+                                            "student_answer": item.get(
+                                                "student_answer", ""
+                                            ),
+                                            "misconception": item.get(
+                                                "analysis", {}
+                                            ).get("misconception", ""),
+                                        }
+                                        for item in related_responses
+                                    ]
+                                ),
+                                hide_index=True,
+                                width="stretch",
+                            )
+                        else:
+                            st.caption(
+                                "No other answer has this exact saved misconception "
+                                "label. The student's other mistakes are available "
+                                "below for comparison."
+                            )
+                        if comparison_responses:
+                            with st.expander(
+                                "Compare with other mistakes from this student"
+                            ):
+                                st.dataframe(
+                                    pd.DataFrame(
+                                        [
+                                            {
+                                                "subject": item.get("subject", ""),
+                                                "topic": item.get("topic", ""),
+                                                "question": item.get("question", ""),
+                                                "student_answer": item.get(
+                                                    "student_answer", ""
+                                                ),
+                                                "misconception": (
+                                                    item.get("analysis", {}).get(
+                                                        "misconception", ""
+                                                    )
+                                                    if isinstance(
+                                                        item.get("analysis"), dict
+                                                    )
+                                                    else ""
+                                                ),
+                                            }
+                                            for item in comparison_responses
+                                        ]
+                                    ),
+                                    hide_index=True,
+                                    width="stretch",
+                                )
+
+                if level == "Question" and not scoped_incorrect:
+                    st.info(
+                        "Select a question with an incorrect answer to start a "
+                        "question-focused make-up conversation."
+                    )
+                elif not os.getenv("GEMINI_API_KEY"):
+                    st.warning(
+                        "Add GEMINI_API_KEY to .env to start a Gemini conversation."
+                    )
+                else:
+                    scope_name = (
+                        f"{selected_subject} / {selected_topic}"
+                        if selected_topic
+                        else selected_subject
+                    )
+                    if selected_question:
+                        scope_name = f"{scope_name} / selected question"
+                    context_rows = scoped_incorrect[:30]
+                    if level == "Question":
+                        context_rows = (
+                            scoped_incorrect[:1] + comparison_responses[:20]
+                        )
+                    context_lines = [
+                        (
+                            f"- {response.get('subject', '')} / "
+                            f"{response.get('topic', '')}: "
+                            f"Question: {response.get('question', '')}; "
+                            f"student answer: {response.get('student_answer', '')}; "
+                            f"correct answer: {response.get('correct_answer', '')}; "
+                            f"diagnosis: "
+                            f"{diagnosis.get('misconception', 'not diagnosed')}"
+                        )
+                        for response in context_rows
+                        for diagnosis in [
+                            response.get("analysis")
+                            if isinstance(response.get("analysis"), dict)
+                            else {}
+                        ]
+                    ]
+                    chat_context = (
+                        f"Selected focus: {scope_name}\n"
+                        "Help the teacher plan supportive misconception make-up for "
+                        "this student's incorrect answers. Explain patterns clearly, "
+                        "suggest an age-appropriate reteaching step and short practice. "
+                        "For a question-level focus, compare the selected error with "
+                        "the other supplied errors and identify only genuinely related "
+                        "patterns; do not claim a connection without evidence.\n"
+                        "Incorrect-answer evidence:\n"
+                        + ("\n".join(context_lines) or "- No diagnosed errors in scope.")
+                    )
+                    chat_key = (
+                        f"{selected_class}|{selected_student}|{selected_subject}|"
+                        f"{selected_topic or 'subject'}|"
+                        f"{selected_question or 'overview'}"
+                    )
+                    conversations = st.session_state.setdefault(
+                        "misconception_conversations", {}
+                    )
+                    history = conversations.setdefault(chat_key, [])
+                    if st.button("Clear conversation", key=f"clear_makeup_{chat_key}"):
+                        conversations[chat_key] = []
+                        st.rerun()
+                    for turn in history:
+                        with st.chat_message(turn["role"]):
+                            st.markdown(turn["content"])
+                    prompt = st.chat_input(
+                        "Ask Gemini about the pattern or request a make-up activity",
+                        key=f"makeup_chat_{chat_key}",
+                    )
+                    if prompt and prompt.strip():
+                        prompt = prompt.strip()
+                        try:
+                            with st.spinner("Preparing a focused response..."):
+                                reply = chat_about_misconceptions(
+                                    chat_context,
+                                    history,
+                                    prompt,
+                                )
+                        except Exception as e:
+                            st.error(f"Gemini could not reply: {e}")
+                        else:
+                            history.extend(
+                                [
+                                    {"role": "user", "content": prompt},
+                                    {"role": "assistant", "content": reply},
+                                ]
+                            )
+                            st.rerun()
