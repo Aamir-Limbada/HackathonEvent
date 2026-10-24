@@ -6,6 +6,8 @@ import streamlit as st
 from dotenv import load_dotenv
 from pymongo import MongoClient
 
+from analysis import chat_with_student
+
 load_dotenv()
 
 st.set_page_config(page_title="TeachAssist AI", page_icon="📚", layout="wide")
@@ -35,17 +37,41 @@ def load_df():
     return pd.DataFrame(docs)
 
 
-tab_add, tab_view, tab_insights = st.tabs(
-    ["✏️ Add response", "📋 Responses", "📊 Class insights"]
+def select_or_add_existing_value(label, field, key):
+    existing_values = {
+        value.strip()
+        for value in db.responses.distinct(field)
+        if isinstance(value, str) and value.strip()
+    }
+    return st.selectbox(
+        label,
+        sorted(existing_values, key=str.casefold),
+        index=None,
+        placeholder=f"Type or select {label.lower()}",
+        accept_new_options=True,
+        key=key,
+        help="Type to search existing values, or enter a new value. New values are saved with the response.",
+    )
+
+
+tab_add, tab_view, tab_insights, tab_chat = st.tabs(
+    ["✏️ Add response", "📋 Responses", "📊 Class insights", "💬 Error-correction chat"]
 )
 
 # ---------- Add response ----------
 with tab_add:
     with st.form("answer_form", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
-        class_name = c1.text_input("Class or group")
-        student_name = c2.text_input("Student name or ID")
-        topic = c3.text_input("Topic")
+        with c1:
+            class_name = select_or_add_existing_value(
+                "Class or group", "class_name", "class_name_select"
+            )
+        with c2:
+            student_name = select_or_add_existing_value(
+                "Student name or ID", "student_name", "student_name_select"
+            )
+        with c3:
+            topic = select_or_add_existing_value("Topic", "topic", "topic_select")
 
         question = st.text_area("Question")
         correct_answer = st.text_area("Correct answer")
@@ -55,7 +81,14 @@ with tab_add:
         submitted = st.form_submit_button("Save response")
 
     if submitted:
-        fields = [class_name, student_name, topic, question, correct_answer, student_answer]
+        fields = [
+            class_name or "",
+            student_name or "",
+            topic or "",
+            question,
+            correct_answer,
+            student_answer,
+        ]
         if not all(f.strip() for f in fields):
             st.warning("Please complete every field.")
         else:
@@ -117,3 +150,81 @@ with tab_insights:
                 st.success("No wrong answers recorded yet.")
             else:
                 st.dataframe(missed, hide_index=True)
+
+# ---------- Error-correction chat ----------
+with tab_chat:
+    st.subheader("Learn from a student's mistake")
+    st.write(
+        "Choose a saved incorrect response to open a focused tutoring chat. "
+        "The student's name and class are not sent to Gemini."
+    )
+
+    incorrect_responses = list(
+        db.responses.find({"is_correct": False}).sort("created_at", -1).limit(100)
+    )
+
+    if not incorrect_responses:
+        st.info("There are no saved incorrect responses to discuss yet.")
+    elif not os.getenv("GEMINI_API_KEY"):
+        st.error("GEMINI_API_KEY is missing. Add it to your .env file to use the tutor.")
+    else:
+        responses_by_id = {str(response["_id"]): response for response in incorrect_responses}
+        response_ids = list(responses_by_id)
+
+        def response_label(response_id):
+            response = responses_by_id[response_id]
+            question = response.get("question", "").replace("\n", " ")
+            if len(question) > 70:
+                question = f"{question[:67]}..."
+            return (
+                f"{response.get('student_name', 'Student')} | "
+                f"{response.get('topic', 'No topic')} | {question}"
+            )
+
+        selected_id = st.selectbox(
+            "Choose an incorrect response",
+            response_ids,
+            format_func=response_label,
+        )
+        selected_response = responses_by_id[selected_id]
+
+        st.markdown(f"**Topic:** {selected_response.get('topic', '')}")
+        st.markdown(f"**Question:** {selected_response.get('question', '')}")
+        st.markdown(f"**Student's answer:** {selected_response.get('student_answer', '')}")
+        st.markdown(f"**Correct answer:** {selected_response.get('correct_answer', '')}")
+
+        conversations = st.session_state.setdefault("tutor_conversations", {})
+        history = conversations.setdefault(selected_id, [])
+
+        if st.button("Clear this chat", key=f"clear_tutor_{selected_id}"):
+            conversations[selected_id] = []
+            st.rerun()
+
+        for turn in history:
+            with st.chat_message(turn["role"]):
+                st.markdown(turn["content"])
+
+        prompt = st.chat_input(
+            "Ask for a hint, explanation, or another example",
+            key=f"tutor_input_{selected_id}",
+        )
+        if prompt and prompt.strip():
+            prompt = prompt.strip()
+            try:
+                with st.spinner("Thinking..."):
+                    reply = chat_with_student(
+                        selected_response.get("topic", ""),
+                        selected_response.get("question", ""),
+                        selected_response.get("correct_answer", ""),
+                        selected_response.get("student_answer", ""),
+                        history,
+                        prompt,
+                    )
+            except Exception as e:
+                st.error(f"Gemini could not reply: {e}")
+            else:
+                history.extend([
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": reply},
+                ])
+                st.rerun()
