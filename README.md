@@ -4,6 +4,13 @@ A teacher records student answers, reviews class performance, and uses AI to fin
 possible misconceptions and prepare revision material. Responses and agent runs are
 stored in MongoDB Atlas.
 
+## Demo access
+
+The password for people trying the demo is `fake-password`. The deployed app's
+`APP_PASSWORD` secret must also be set to `fake-password` for this password to
+work. This shared password is for the demo only; do not use it to protect real
+student data.
+
 ## What the app does
 
 The app has eight tabs:
@@ -202,7 +209,7 @@ Create a `.env` file in the same folder as `app.py`:
 MONGODB_URI=mongodb+srv://<db_user>:<db_password>@<cluster>.mongodb.net/
 GEMINI_API_KEY=<your-api-key>
 GEMINI_MODEL=gemini-4-argon
-APP_PASSWORD=<a-long-random-password>
+APP_PASSWORD=fake-password
 ```
 
 The current app can record and display responses with MongoDB configured. Gemini
@@ -217,7 +224,7 @@ add the configuration in TOML form:
 MONGODB_URI = "mongodb+srv://<db_user>:<db_password>@<cluster>.mongodb.net/"
 GEMINI_API_KEY = "<your-api-key>"
 GEMINI_MODEL = "gemini-4-argon"
-APP_PASSWORD = "<a-long-random-password>"
+APP_PASSWORD = "fake-password"
 ```
 
 The app reads these values from Streamlit secrets (and uses `.env` locally). Do not
@@ -225,9 +232,8 @@ commit `.env` or credentials to Git.
 
 `APP_PASSWORD` is required. The app will not load its database or display its
 content until it is set. After unlocking, use **Lock app** in the sidebar to lock
-the current browser session again. Use a long, unique password and share it only
-with intended users. This is a shared-password gate, not a full user-account
-system; it has no per-user permissions or login rate limiting.
+the current browser session again. This is a shared-password gate, not a full
+user-account system; it has no per-user permissions or login rate limiting.
 
 Start the app from the project folder:
 
