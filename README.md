@@ -174,8 +174,10 @@ The defaults in `analysis.py` are `gemini-4-argon` and `gemini-embedding-001`.
 Gemini is called when a teacher runs misconception analysis, generates teaching
 notes, uses the teaching chat, or starts the Class Agent. Class Agent processing
 sends the question, correct answer, and student answer to Gemini. Do not use real
-student information in a demo. The app has no login or per-teacher data separation,
-so any user with access to the app can see the shared database.
+student information in a demo. The app uses a shared access password gate, but it does not provide individual
+accounts, roles, or per-teacher data separation. Anyone with the shared password
+can access the same database. Treat the password as a basic access barrier, not as
+a replacement for proper authentication and authorization.
 
 API model access, quotas, and billing depend on the Google account and are not
 controlled by this application.
@@ -200,6 +202,7 @@ Create a `.env` file in the same folder as `app.py`:
 MONGODB_URI=mongodb+srv://<db_user>:<db_password>@<cluster>.mongodb.net/
 GEMINI_API_KEY=<your-api-key>
 GEMINI_MODEL=gemini-4-argon
+APP_PASSWORD=<a-long-random-password>
 ```
 
 The current app can record and display responses with MongoDB configured. Gemini
@@ -214,10 +217,17 @@ add the configuration in TOML form:
 MONGODB_URI = "mongodb+srv://<db_user>:<db_password>@<cluster>.mongodb.net/"
 GEMINI_API_KEY = "<your-api-key>"
 GEMINI_MODEL = "gemini-4-argon"
+APP_PASSWORD = "<a-long-random-password>"
 ```
 
 The app reads these values from Streamlit secrets (and uses `.env` locally). Do not
 commit `.env` or credentials to Git.
+
+`APP_PASSWORD` is required. The app will not load its database or display its
+content until it is set. After unlocking, use **Lock app** in the sidebar to lock
+the current browser session again. Use a long, unique password and share it only
+with intended users. This is a shared-password gate, not a full user-account
+system; it has no per-user permissions or login rate limiting.
 
 Start the app from the project folder:
 
@@ -239,7 +249,8 @@ README.md          Project and setup guide
 
 ## Known limitations
 
-- The app has no authentication or per-teacher access controls.
+- The app has only a shared-password gate, not individual accounts, roles, or
+  per-teacher access controls.
 - Gemini can make mistakes, particularly when student answers are open-ended.
 - Gemini API access, model availability, usage limits, and billing depend on the
   configured Google account.

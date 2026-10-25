@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import json
 import os
 from datetime import datetime, timezone
@@ -35,11 +36,37 @@ for setting in (
     "GEMINI_API_KEY",
     "GEMINI_MODEL",
     "GEMINI_EMBEDDING_MODEL",
+    "APP_PASSWORD",
 ):
     if setting not in os.environ and setting in app_secrets:
         os.environ[setting] = str(app_secrets[setting])
 
 st.set_page_config(page_title="AIM Assist", page_icon="📘", layout="wide")
+
+access_password = os.getenv("APP_PASSWORD")
+if not access_password:
+    st.error(
+        "App access is not configured. Set `APP_PASSWORD` in Streamlit Secrets "
+        "or your local `.env` file."
+    )
+    st.stop()
+
+if not st.session_state.get("app_authenticated"):
+    with st.form("app_access_form"):
+        st.title("AIM Assist")
+        st.caption("Enter the shared access password to continue.")
+        entered_password = st.text_input("Access password", type="password")
+        submitted = st.form_submit_button("Unlock")
+    if submitted:
+        if hmac.compare_digest(entered_password, access_password):
+            st.session_state["app_authenticated"] = True
+            st.rerun()
+        st.error("That password was not accepted.")
+    st.stop()
+
+if st.sidebar.button("Lock app"):
+    st.session_state.pop("app_authenticated", None)
+    st.rerun()
 
 components.html(
     """
